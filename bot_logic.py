@@ -9,6 +9,7 @@ import re
 from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import json  # Added for parsing JSON credentials
 
 # --- BILINGUAL SYSTEM PROMPT (for reference only) ---
 SYSTEM_PROMPT = """
@@ -275,37 +276,67 @@ def validate_phone(phone):
 def generate_order_id():
     return f"FD-{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
-# --- NEW GOOGLE SHEETS FUNCTION ---
+# --- MODIFIED GOOGLE SHEETS FUNCTION ---
 def save_to_google_sheets(order_data):
     try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        # This file is created via Render Secrets
-        creds = ServiceAccountCredentials.from_json_keyfile_name("creds.json", scope)
-        client = gspread.authorize(creds)
-        
-        # Open using your specific URL from the Streamlit env
-        spreadsheet_url = "https://docs.google.com/spreadsheets/d/1SqbFIXim9fVjXQJ8_7ICgBNamCTiYzbTd4DcnVvffv4/edit"
-        sheet = client.open_by_url(spreadsheet_url).sheet1
-        
-        # Row data mapped to your ERP columns
-        new_row = [
-            order_data.get('full_name'),     # Name
-            order_data.get('phone'),         # Contact
-            order_data.get('quantity'),      # Qty
-            order_data.get('total_price'),   # money (Price)
-            "Pending",                       # Stage
-            order_data.get('total_price'),   # Total
-            "Unassigned",                    # Biker
-            datetime.now().strftime('%Y-%m-%d %H:%M'), # Order Time
-            order_data.get('order_id'),      # Order_ID
-            "No",                            # Paid
-            "No",                            # Design_confirmed
-            "Yes" if order_data.get('front_photo') == "NEEDS_DESIGNER" else "No",
-            "No"                             # Designer_finished
+        # 1. Get the credentials JSON string from environment variable
+        creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
+        if not creds_json_str:
+            logging.error("GSHEET ERROR: Environment variable 'GOOGLE_SHEETS_CREDENTIALS' not found.")
+            return False
+
+        # 2. Parse the JSON string into a Python dictionary
+        try:
+            creds_info = json.loads(creds_json_str)
+        except json.JSONDecodeError as e:
+            logging.error(f"GSHEET ERROR: Failed to parse credentials JSON: {e}")
+            return False
+
+        # 3. Define the required scope
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive"
         ]
+
+        # 4. Create credentials object directly from the dictionary
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
+
+        # 5. Authorize the gspread client
+        client = gspread.authorize(creds)
+
+        # 6. Open the specific Google Sheet using its URL
+        # Replace this URL with your actual Google Sheet URL
+        spreadsheet_url = "https://docs.google.com/spreadsheets/d/1SqbFIXim9fVjXQJ8_7ICgBNamCTiYzbTd4DcnVvffv4/edit"
+        sheet = client.open_by_url(spreadsheet_url).sheet1 # Opens the first sheet
+
+        # 7. Prepare the new row data (adjust column order based on your sheet)
+        new_row = [
+            order_data.get('full_name', ''),     # A: Name
+            order_data.get('phone', ''),         # B: Contact
+            order_data.get('quantity', 0),       # C: Qty
+            order_data.get('total_price', 0),    # D: money (Price)
+            "Pending",                           # E: Stage
+            order_data.get('total_price', 0),    # F: Total
+            "Unassigned",                        # G: Biker
+            datetime.now().strftime('%Y-%m-%d %H:%M'), # H: Order Time
+            order_data.get('order_id', ''),      # I: Order_ID
+            "No",                                # J: Paid
+            "No",                                # K: Design_confirmed
+            "Yes" if order_data.get('front_photo') == "NEEDS_DESIGNER" else "No", # L: Is_connected_designer
+            "No"                                 # M: Designer_finished
+        ]
+
+        # 8. Append the new row to the sheet
         sheet.append_row(new_row)
+        logging.info(f"Successfully saved order {order_data.get('order_id', 'N/A')} to Google Sheets.")
         return True
+
+    except gspread.exceptions.APIError as e:
+        # Handle specific Google Sheets API errors
+        logging.error(f"GSHEET API ERROR: {e.response.status_code} - {e.response.json()}")
+        return False
     except Exception as e:
+        # Handle any other errors
         logging.error(f"GSHEET ERROR: {e}")
         return False
 
@@ -438,10 +469,10 @@ async def get_agreement(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if 'Yes' in update.message.text or 'አዎ' in update.message.text:
         if lang == 'am':
             guidelines = DESIGN_GUIDELINES_AM
-            buttons = [['📤 ፊት ለፊት ይጫኑ', '🔗 ከዲዛይነር ጋር ይገናኙ', 'ዝለል', '🏠 ወደ መነሻ ይመለሱ']]
+            buttons = [['UPLOAD FRONT', 'CONNECT WITH DESIGNER', 'ዝለል', '🏠 ወደ መነሻ ይመለሱ']]
         else:
             guidelines = DESIGN_GUIDELINES_EN
-            buttons = [['📤 Upload Front', '🔗 Connect with Designer', 'Skip', '🏠 Back to Menu']]
+            buttons = [['UPLOAD FRONT', 'CONNECT WITH DESIGNER', 'SKIP', '🏠 Back to Menu']]
         await update.message.reply_text(
             guidelines,
             parse_mode='Markdown',
@@ -506,18 +537,18 @@ Please contact them manually for design consultation.
     elif update.message.document:
         if lang == 'am':
             message = "እባክዎ ዲዛይንን እንደ ፎቶ ይላኩ (እንደ ፋይል ሳይሆን)።\nPDF/AI ፋይል ካለዎት እባክዎ ድጋፍ ያግኙ።"
-            buttons = [['📤 UPLOAD FRONT', '🔗 CONNECT WITH DESIGNER', 'SKIP', '🏠 ወደ መነሻ ይመለሱ']]
+            buttons = [['UPLOAD FRONT', 'CONNECT WITH DESIGNER', 'ዝለል', '🏠 ወደ መነሻ ይመለሱ']]
         else:
             message = "Please send the design as a photo (not a document file).\nIf you have a PDF/AI file, please contact support."
-            buttons = [['📤 UPLOAD FRONT', 'LINK WITH DESIGNER', 'SKIP', '🏠 Back to Menu']]
+            buttons = [['UPLOAD FRONT', 'CONNECT WITH DESIGNER', 'SKIP', '🏠 Back to Menu']]
         await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
         return FRONT_IMAGE
     else:
         if lang == 'am':
-            buttons = [['📤 UPLOAD FRONT', '🔗 CONNECT WITH DESIGNER', 'ዝለል', '🏠 ወደ መነሻ ይመለሱ']]
+            buttons = [['UPLOAD FRONT', 'CONNECT WITH DESIGNER', 'ዝለል', '🏠 ወደ መነሻ ይመለሱ']]
             message = "እባክዎ የፊት ለፊት ዲዛይንዎን ይጫኑ፣ ከዲዛይነር ጋር ለመገናኘት ይምረጡ ወይም 'ዝለል' ይተይቡ:"
         else:
-            buttons = [['📤 UPLOAD FRONT', 'LINK WITH DESIGNER', 'SKIP', '🏠 Back to Menu']]
+            buttons = [['UPLOAD FRONT', 'CONNECT WITH DESIGNER', 'SKIP', '🏠 Back to Menu']]
             message = "Please upload a photo of your front design, connect with a designer, or click 'Skip':"
         await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
         return FRONT_IMAGE
@@ -597,6 +628,14 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         phone = update.message.contact.phone_number
     else:
         phone = update.message.text.strip()
+    # FIXED: Check if context.user_data is None
+    if not context.user_
+        logging.error("context.user_data is None in get_contact")
+        if lang == 'en':
+            await update.message.reply_text("Session error. Please restart with /start")
+        else:
+            await update.message.reply_text("የክፍለ ጊዜ ስህተት። እባክዎ /start በመጠቀም እንደገና ይጀምሩ")
+        return ConversationHandler.END
     if not validate_phone(phone):
         if lang == 'am':
             button_text = "📱 ስልክ ቁጥር ያጋሩ"
@@ -776,7 +815,7 @@ async def check_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = detect_language(update.message.text) if update.message else 'en'
     order_id = context.user_data.get('order_id')
     if not order_id:
-        if 'full_name' in context.user_data:  # Fixed typo
+        if 'full_name' in context.user_  # Fixed typo
             order_id = context.user_data.get('order_id', 'Unknown')
         else:
             if lang == 'en':
