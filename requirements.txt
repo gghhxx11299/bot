@@ -2,3 +2,5 @@ python-telegram-bot==20.7
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
 python-multipart==0.0.9
+gspread==6.1.2
+oauth2client==4.1.3
