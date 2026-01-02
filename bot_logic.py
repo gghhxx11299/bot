@@ -1,4 +1,3 @@
-# bot_logic.py
 import logging
 import os
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
@@ -8,6 +7,8 @@ from telegram.ext import (
 )
 import re
 from datetime import datetime
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 # --- BILINGUAL SYSTEM PROMPT (for reference only) ---
 SYSTEM_PROMPT = """
@@ -37,6 +38,7 @@ DESIGN_GUIDELINES_EN = """
 ✓ Connect with a designer (if you have an idea but haven't made it yet)
 Upload your front design now, or type 'skip' to use our template.
 """
+
 DESIGN_GUIDELINES_AM = """
 📋 **የኤንኤፍሲ ቢዝነስ ካርዶች ዲዛይን መመሪያዎች**
 **የሚፈለጉ ዝርዝሮች:**
@@ -63,6 +65,7 @@ PRICING_EN = """
 • 200 ETB in Addis Ababa
 • Outside Ethiopia upon request (call 0960375738)
 """
+
 PRICING_AM = """
 💰 **የኤንኤፍሲ ቢዝነስ ካርዶች ዋጋ**
 **የዋጋ ዝርዝር:**
@@ -93,6 +96,7 @@ HOW_IT_WORKS_EN = """
 • 200 ETB delivery in Addis Ababa
 • Outside Ethiopia upon request (call 0960375738)
 """
+
 HOW_IT_WORKS_AM = """
 ℹ️ **እንዴት ይሰራል**
 **ደረጃ 1: ትዕዛዝ**
@@ -239,7 +243,6 @@ Our service team will be in touch with you soon.
 # --- CONFIG (from environment variables) ---
 TOKEN = os.getenv("BOT_TOKEN")
 MY_ADMIN_ID = os.getenv("ADMIN_ID")
-
 if not TOKEN or not MY_ADMIN_ID:
     raise ValueError("Missing required environment variables: BOT_TOKEN, ADMIN_ID")
 
@@ -271,6 +274,40 @@ def validate_phone(phone):
 
 def generate_order_id():
     return f"FD-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+# --- NEW GOOGLE SHEETS FUNCTION ---
+def save_to_google_sheets(order_data):
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        # This file is created via Render Secrets
+        creds = ServiceAccountCredentials.from_json_keyfile_name("creds.json", scope)
+        client = gspread.authorize(creds)
+        
+        # Open using your specific URL from the Streamlit env
+        spreadsheet_url = "https://docs.google.com/spreadsheets/d/1SqbFIXim9fVjXQJ8_7ICgBNamCTiYzbTd4DcnVvffv4/edit"
+        sheet = client.open_by_url(spreadsheet_url).sheet1
+        
+        # Row data mapped to your ERP columns
+        new_row = [
+            order_data.get('full_name'),     # Name
+            order_data.get('phone'),         # Contact
+            order_data.get('quantity'),      # Qty
+            order_data.get('total_price'),   # money (Price)
+            "Pending",                       # Stage
+            order_data.get('total_price'),   # Total
+            "Unassigned",                    # Biker
+            datetime.now().strftime('%Y-%m-%d %H:%M'), # Order Time
+            order_data.get('order_id'),      # Order_ID
+            "No",                            # Paid
+            "No",                            # Design_confirmed
+            "Yes" if order_data.get('front_photo') == "NEEDS_DESIGNER" else "No",
+            "No"                             # Designer_finished
+        ]
+        sheet.append_row(new_row)
+        return True
+    except Exception as e:
+        logging.error(f"GSHEET ERROR: {e}")
+        return False
 
 # --- HANDLERS (NO AI, NO GROQ) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -472,7 +509,7 @@ Please contact them manually for design consultation.
             buttons = [['📤 UPLOAD FRONT', '🔗 CONNECT WITH DESIGNER', 'SKIP', '🏠 ወደ መነሻ ይመለሱ']]
         else:
             message = "Please send the design as a photo (not a document file).\nIf you have a PDF/AI file, please contact support."
-            buttons = [['📤 UPLOAD FRONT', '🔗 CONNECT WITH DESIGNER', 'SKIP', '🏠 Back to Menu']]
+            buttons = [['📤 UPLOAD FRONT', 'LINK WITH DESIGNER', 'SKIP', '🏠 Back to Menu']]
         await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
         return FRONT_IMAGE
     else:
@@ -480,7 +517,7 @@ Please contact them manually for design consultation.
             buttons = [['📤 UPLOAD FRONT', '🔗 CONNECT WITH DESIGNER', 'ዝለል', '🏠 ወደ መነሻ ይመለሱ']]
             message = "እባክዎ የፊት ለፊት ዲዛይንዎን ይጫኑ፣ ከዲዛይነር ጋር ለመገናኘት ይምረጡ ወይም 'ዝለል' ይተይቡ:"
         else:
-            buttons = [['📤 UPLOAD FRONT', '🔗 CONNECT WITH DESIGNER', 'SKIP', '🏠 Back to Menu']]
+            buttons = [['📤 UPLOAD FRONT', 'LINK WITH DESIGNER', 'SKIP', '🏠 Back to Menu']]
             message = "Please upload a photo of your front design, connect with a designer, or click 'Skip':"
         await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
         return FRONT_IMAGE
@@ -629,6 +666,9 @@ async def confirm_design(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if 'Back' in update.message.text or 'ይመለሱ' in update.message.text:
         return await start(update, context)
     if 'Confirm' in update.message.text or 'አረጋግጥ' in update.message.text:
+        # 1. SAVE TO GOOGLE SHEETS
+        success = save_to_google_sheets(context.user_data)
+        # 2. NOTIFY ADMIN
         order_id = context.user_data.get('order_id', 'N/A')
         front_photo = context.user_data.get('front_photo', '')
         back_photo = context.user_data.get('back_photo', '')
@@ -713,10 +753,16 @@ async def confirm_design(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.application.create_task(send_reminder())
         except Exception as e:
             logging.error(f"Error sending order to admin: {e}")
+        if success:
             if lang == 'en':
-                await update.message.reply_text("Order submitted! You'll be contacted shortly.")
+                await update.message.reply_text("✅ Order saved to ERP!")
             else:
-                await update.message.reply_text("ትዕዛዙ ቀርቧል! በቅርብ ጊዜ እናግኝዎታለን።")
+                await update.message.reply_text("✅ ትዕዛዝ ወደ ኤርፒ ተቀብሏል!")
+        else:
+            if lang == 'en':
+                await update.message.reply_text("⚠️ Order saved to Telegram only (ERP connection failed).")
+            else:
+                await update.message.reply_text("⚠️ ትዕዛዝ ብቻ ተቀብሏል (ኤርፒ ግንኙነት አልተሳካም).")
         return await start(update, context)
     else:
         if lang == 'am':
@@ -730,7 +776,7 @@ async def check_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = detect_language(update.message.text) if update.message else 'en'
     order_id = context.user_data.get('order_id')
     if not order_id:
-        if 'full_name' in context.user_data:  # ✅ FIXED: was context.user_
+        if 'full_name' in context.user_data:  # Fixed typo
             order_id = context.user_data.get('order_id', 'Unknown')
         else:
             if lang == 'en':
@@ -825,6 +871,13 @@ async def handle_support_final(update: Update, context: ContextTypes.DEFAULT_TYP
     lang = context.user_data.get('support_lang', 'en')
     if not context.user_data.get('support_msg'):
         context.user_data['support_msg'] = update.message.text
+    if update.message.contact:
+        phone = update.message.contact.phone_number
+    else:
+        phone = update.message.text.strip()
+    if 'Back' in update.message.text or 'ይመለሱ' in update.message.text:
+        return await start(update, context)
+    if not validate_phone(phone):
         if lang == 'am':
             button_text = "📱 ስልክ ቁጥር ያጋሩ"
             buttons = [['📱 ስልክ ቁጥር ያጋሩ', '🏠 ወደ መነሻ ይመለሱ']]
@@ -834,33 +887,12 @@ async def handle_support_final(update: Update, context: ContextTypes.DEFAULT_TYP
         keyboard = [[KeyboardButton(button_text, request_contact=True)]]
         keyboard.append(buttons[0])
         await update.message.reply_text(
-            "Thank you. Now please share your phone number for callback:" if lang == 'en' else "አመሰግናለሁ። አሁን እባክዎ ለመመለስ ስልክ ቁጥርዎን ያጋሩ:",
+            get_message('invalid_phone', lang),
             reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         )
         return SUPPORT_PHONE
-    else:
-        if update.message.contact:
-            phone = update.message.contact.phone_number
-        else:
-            phone = update.message.text.strip()
-        if 'Back' in update.message.text or 'ይመለሱ' in update.message.text:
-            return await start(update, context)
-        if not validate_phone(phone):
-            if lang == 'am':
-                button_text = "📱 ስልክ ቁጥር ያጋሩ"
-                buttons = [['📱 ስልክ ቁጥር ያጋሩ', '🏠 ወደ መነሻ ይመለሱ']]
-            else:
-                button_text = "📱 Share Phone Number"
-                buttons = [['📱 Share Phone Number', '🏠 Back to Menu']]
-            keyboard = [[KeyboardButton(button_text, request_contact=True)]]
-            keyboard.append(buttons[0])
-            await update.message.reply_text(
-                get_message('invalid_phone', lang),
-                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            )
-            return SUPPORT_PHONE
-        if lang == 'am':
-            admin_msg = f"""
+    if lang == 'am':
+        admin_msg = f"""
 🆘 **የድጋፍ ጥያቄ**
 **አይነት:** {context.user_data.get('support_type', 'አልተገለጸም')}
 **ስልክ:** {phone}
@@ -869,8 +901,8 @@ async def handle_support_final(update: Update, context: ContextTypes.DEFAULT_TYP
 {context.user_data.get('support_msg', 'መልእክት የለም')}
 **ሁኔታ:** ⏳ መመለስ ያስፈልገዋል
 """
-        else:
-            admin_msg = f"""
+    else:
+        admin_msg = f"""
 🆘 **SUPPORT REQUEST**
 **Type:** {context.user_data.get('support_type', 'Not specified')}
 **Phone:** {phone}
@@ -879,19 +911,19 @@ async def handle_support_final(update: Update, context: ContextTypes.DEFAULT_TYP
 {context.user_data.get('support_msg', 'No message')}
 **Status:** ⏳ Needs callback
 """
-        try:
-            await context.bot.send_message(chat_id=MY_ADMIN_ID, text=admin_msg, parse_mode='Markdown')
-            if lang == 'en':
-                await update.message.reply_text("✅ Support request sent! We'll call you within 30 minutes.", reply_markup=ReplyKeyboardRemove())
-            else:
-                await update.message.reply_text("✅ የድጋፍ ጥያቄ ተልኳል! በ30 ደቂቃዎች ውስጥ እንደገና እናግኝዎታለን።", reply_markup=ReplyKeyboardRemove())
-        except Exception as e:
-            logging.error(f"Error sending support request: {e}")
-            if lang == 'en':
-                await update.message.reply_text("Message received. We'll contact you soon.", reply_markup=ReplyKeyboardRemove())
-            else:
-                await update.message.reply_text("መልእክት ተቀብሎአል። በቅርብ ጊዜ እናግኝዎታለን።", reply_markup=ReplyKeyboardRemove())
-        return await start(update, context)
+    try:
+        await context.bot.send_message(chat_id=MY_ADMIN_ID, text=admin_msg, parse_mode='Markdown')
+        if lang == 'en':
+            await update.message.reply_text("✅ Support request sent! We'll call you within 30 minutes.", reply_markup=ReplyKeyboardRemove())
+        else:
+            await update.message.reply_text("✅ የድጋፍ ጥያቄ ተልኳል! በ30 ደቂቃዎች ውስጥ እንደገና እናግኝዎታለን።", reply_markup=ReplyKeyboardRemove())
+    except Exception as e:
+        logging.error(f"Error sending support request: {e}")
+        if lang == 'en':
+            await update.message.reply_text("Message received. We'll contact you soon.", reply_markup=ReplyKeyboardRemove())
+        else:
+            await update.message.reply_text("መልእክት ተቀብሎአል። በቅርብ ጊዜ እናግኝዎታለን።", reply_markup=ReplyKeyboardRemove())
+    return await start(update, context)
 
 async def handle_status_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await check_status(update, context)
@@ -923,17 +955,14 @@ def setup_application() -> Application:
     )
     app = Application.builder().token(TOKEN).build()
     app.add_error_handler(error_handler)
-
     # Command handlers
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('status', check_status))
-
     # Non-conversation handlers
     app.add_handler(MessageHandler(filters.Regex('Pricing|ዋጋ'), show_pricing))
     app.add_handler(MessageHandler(filters.Regex('Design Guidelines|የዲዛይን መመሪያዎች'), show_design_guidelines))
     app.add_handler(MessageHandler(filters.Regex('How it Works|እንዴት ይሰራል'), show_how_it_works))
     app.add_handler(MessageHandler(filters.Regex('Check Status|ሁኔታ ማየት'), handle_status_button))
-
     # Order conversation
     order_conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex('Order|ይዘዙ|Order Now|አሁን ይዘዙ'), order_start)],
@@ -952,7 +981,6 @@ def setup_application() -> Application:
             MessageHandler(filters.Regex('Cancel|Restart|ሰርዝ|እንደገና ጀምር|Back|ይመለሱ'), start)
         ],
     )
-
     # Support conversation
     support_conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex('Support|እርዳታ'), support_start)],
@@ -966,10 +994,7 @@ def setup_application() -> Application:
             MessageHandler(filters.Regex('Cancel|Restart|ሰርዝ|እንደገና ጀምር|Back|ይመለሱ'), start)
         ],
     )
-
     app.add_handler(order_conv_handler)
     app.add_handler(support_conv_handler)
-
-    # 🔥 NO AI HANDLER — REMOVED
-
+    # NO AI HANDLER
     return app
