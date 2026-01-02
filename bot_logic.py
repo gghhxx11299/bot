@@ -629,7 +629,7 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         phone = update.message.text.strip()
     # FIXED: Check if context.user_data is None
-    if not context.user_
+    if not context.user_data:
         logging.error("context.user_data is None in get_contact")
         if lang == 'en':
             await update.message.reply_text("Session error. Please restart with /start")
@@ -815,7 +815,7 @@ async def check_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = detect_language(update.message.text) if update.message else 'en'
     order_id = context.user_data.get('order_id')
     if not order_id:
-        if 'full_name' in context.user_  # Fixed typo
+        if 'full_name' in context.user_data:  # ✅ FIXED: was context.user_
             order_id = context.user_data.get('order_id', 'Unknown')
         else:
             if lang == 'en':
