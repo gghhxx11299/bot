@@ -1,5 +1,6 @@
 # bot_logic.py
 import logging
+import os
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
@@ -7,9 +8,8 @@ from telegram.ext import (
 )
 import re
 from datetime import datetime
-import os
 
-# --- BILINGUAL SYSTEM PROMPT (kept for reference) ---
+# --- BILINGUAL SYSTEM PROMPT (for reference only) ---
 SYSTEM_PROMPT = """
 You are the FineData Assistant for an Ethiopian startup selling premium laser-engraved NFC business cards.
 Respond in English or Amharic based on user's language preference.
@@ -202,7 +202,7 @@ Your order `{order_id}` has been received.
 • Items: {quantity} NFC Business Cards
 • Total: {total} ETB
 • Status: Awaiting Contact
-Our team will handle everything manually:
+**Our team will handle everything manually:**
 • Design consultation if needed
 • Payment arrangements
 • Delivery coordination
@@ -223,7 +223,7 @@ Our service team will be in touch with you soon.
 • ዕቃዎች: {quantity} ኤንኤፍሲ ቢዝነስ ካርዶች
 • ጠቅላላ: {total} ብር
 • ሁኔታ: በመገናኘት ላይ
-ቡድናችን ሁሉንም ነገር በአግባቡ ያስተናግዳል:
+**ቡድናችን ሁሉንም ነገር በአግባቡ ያስተናግዳል:**
 • የዲዛይን ምክር ከፈለጉ
 • የክፍያ ማደራጀት
 • የማስረከቢያ አሰጣጥ
@@ -236,9 +236,12 @@ Our service team will be in touch with you soon.
     }
 }
 
-# --- CONFIG (use env vars in production) ---
-TOKEN = os.getenv("BOT_TOKEN", "8043069992:AAED1gGkZQ52JItsWpbVKWuFiRSv2cp82U0")
-MY_ADMIN_ID = os.getenv("ADMIN_ID", "1621254504")
+# --- CONFIG (from environment variables) ---
+TOKEN = os.getenv("BOT_TOKEN")
+MY_ADMIN_ID = os.getenv("ADMIN_ID")
+
+if not TOKEN or not MY_ADMIN_ID:
+    raise ValueError("Missing required environment variables: BOT_TOKEN, ADMIN_ID")
 
 # --- STATES ---
 QUANTITY, AGREEMENT, FRONT_IMAGE, BACK_IMAGE, USER_NAME, CONTACT_INFO, DESIGN_CONFIRM = range(7)
@@ -246,13 +249,11 @@ SUPPORT_DESC, SUPPORT_PHONE = range(8, 10)
 
 # --- HELPERS ---
 def get_message(key, lang='en', **kwargs):
-    """Get bilingual message"""
     message = MESSAGES.get(key, {}).get(lang, MESSAGES.get(key, {}).get('en', ''))
     return message.format(**kwargs) if kwargs else message
 
 def detect_language(text):
-    """Simple language detection based on Amharic characters"""
-    amharic_range = range(4608, 4989)  # Amharic Unicode range
+    amharic_range = range(4608, 4989)
     if any(ord(char) in amharic_range for char in str(text)[:10]):
         return 'am'
     return 'en'
@@ -265,14 +266,13 @@ def calculate_price(qty):
     return qty * 1200
 
 def validate_phone(phone):
-    """Validate Ethiopian phone numbers"""
     eth_pattern = r'^(09\d{8}|\+2519\d{8}|2519\d{8}|9\d{8})$'
     return bool(re.match(eth_pattern, str(phone)))
 
 def generate_order_id():
     return f"FD-{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
-# --- HANDLERS (identical to original, no AI) ---
+# --- HANDLERS (NO AI, NO GROQ) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         ['🛍 Order / ይዘዙ', '💰 Pricing / ዋጋ'],
@@ -730,7 +730,7 @@ async def check_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = detect_language(update.message.text) if update.message else 'en'
     order_id = context.user_data.get('order_id')
     if not order_id:
-        if 'full_name' in context.user_
+        if 'full_name' in context.user_data:  # ✅ FIXED: was context.user_
             order_id = context.user_data.get('order_id', 'Unknown')
         else:
             if lang == 'en':
@@ -780,10 +780,14 @@ async def check_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Call us for immediate assistance
 Our service team will contact you soon!
 """
-    await update.message.reply_text(status_message, parse_mode='Markdown', reply_markup=ReplyKeyboardMarkup(
-        [['📞 Contact Support', '🛍 New Order', '🏠 Back to Menu']],
-        resize_keyboard=True
-    ))
+    await update.message.reply_text(
+        status_message,
+        parse_mode='Markdown',
+        reply_markup=ReplyKeyboardMarkup(
+            [['📞 Contact Support', '🛍 New Order', '🏠 Back to Menu']],
+            resize_keyboard=True
+        )
+    )
 
 async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = detect_language(update.message.text)
@@ -911,7 +915,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         pass
 
-# --- MAIN SETUP FUNCTION (for webhook import) ---
+# --- SETUP FUNCTION FOR WEBHOOK ---
 def setup_application() -> Application:
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -966,6 +970,6 @@ def setup_application() -> Application:
     app.add_handler(order_conv_handler)
     app.add_handler(support_conv_handler)
 
-    # 🔥 NO AI HANDLER — REMOVED FOR SPEED
+    # 🔥 NO AI HANDLER — REMOVED
 
     return app
