@@ -6,15 +6,13 @@ from telegram.ext import Application
 from telegram import Update
 from bot_logic import setup_application
 
-# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize bot app from logic module
 app = setup_application()
 fastapi_app = FastAPI()
 
-# Webhook path uses BOT_TOKEN for security
+# Define the webhook path (for routing)
 WEBHOOK_PATH = f"/webhook/{os.getenv('BOT_TOKEN')}"
 
 @fastapi_app.on_event("startup")
@@ -24,7 +22,7 @@ async def on_startup():
     webhook_url = os.getenv("WEBHOOK_URL")
     if webhook_url:
         await app.bot.set_webhook(url=webhook_url)
-        logger.info(f"✅ Telegram webhook set to: {webhook_path}")
+        logger.info(f"✅ Telegram webhook set to: {webhook_url}")
     else:
         logger.warning("⚠️ WEBHOOK_URL not set! Bot will not receive updates.")
 
@@ -35,7 +33,6 @@ async def on_shutdown():
 
 @fastapi_app.post(WEBHOOK_PATH)
 async def telegram_webhook(request: Request):
-    """Receive updates from Telegram via webhook"""
     try:
         json_data = await request.json()
         update = Update.de_json(json_data, app.bot)
@@ -47,5 +44,4 @@ async def telegram_webhook(request: Request):
 
 @fastapi_app.get("/health")
 async def health_check():
-    """Health check endpoint for Render"""
     return {"status": "ok", "bot": "running"}
