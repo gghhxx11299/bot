@@ -345,47 +345,45 @@ def save_to_google_sheets(order_data):
         return False
 
 # --- STATUS CHECK FUNCTION ---
+# --- STATUS CHECK FUNCTION (FIXED FOR COLUMN CASE) ---
 def check_order_status_in_sheet(order_id):
     try:
-        # 1. Get the credentials JSON string from environment variable (CORRECTED)
+        # 1. Get credentials from environment variable
         creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
         if not creds_json_str:
             logging.error("GSHEET ERROR: Environment variable 'GOOGLE_SHEETS_CREDENTIALS' not found.")
             return None
 
-        # 2. Setup Credentials and Client
+        # 2. Setup client
         creds_info = json.loads(creds_json_str)
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
         client = gspread.authorize(creds)
 
-        # 3. Open the Spreadsheet
+        # 3. Open sheet
         spreadsheet_url = "https://docs.google.com/spreadsheets/d/1SqbFIXim9fVjXQJ8_7ICgBNamCTiYzbTd4DcnVvffv4/edit"
         sheet = client.open_by_url(spreadsheet_url).sheet1 
 
-        # 4. Get all data as a list of dictionaries
-        # This maps Column headers (Row 1) to values (Row 2, 3...)
+        # 4. Get all records (this uses Row 1 as keys)
         records = sheet.get_all_records()
 
-        # 5. Search for the specific Order_ID
+        # 5. Search using EXACT COLUMN NAMES from your sheet
         for row in records:
-            # Convert both to string to ensure a match (e.g., "1001" == "1001")
-            if str(row.get('Order_ID')).strip() == str(order_id).strip():
+            # Compare against the EXACT header: 'Order_ID'
+            if str(row.get('Order_ID', '')).strip() == str(order_id).strip():
                 return {
-                    'stage': row.get('Stage', 'Pending'),
-                    'paid': row.get('Paid', 'No'),
-                    'biker': row.get('Biker', 'Unassigned'),
-                    'order_time': row.get('Order Time', 'Unknown')
+                    'stage': row.get('Stage', 'Pending'),      # Exact header: 'Stage'
+                    'paid': row.get('Paid', 'No'),             # Exact header: 'Paid'
+                    'biker': row.get('Biker', 'Unassigned'),   # Exact header: 'Biker'
+                    'order_time': row.get('Order Time', 'Unknown') # Exact header: 'Order Time'
                 }
 
-        # If we get through the whole loop without a match
         logging.warning(f"Order ID {order_id} not found in sheet.")
         return None
 
     except Exception as e:
         logging.error(f"Error during status check: {e}")
         return None
-
 # --- HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
