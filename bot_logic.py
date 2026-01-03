@@ -180,41 +180,42 @@ def save_to_google_sheets(order_data):
         logging.error(f"GSHEET ERROR in save_to_google_sheets: {e}")
         return False
 
+# --- STATUS CHECK FUNCTION (CORRECTED) ---
 def check_order_status_in_sheet(order_id):
-    """Fetches order status from Google Sheet using the exact 'Order_ID' column."""
     try:
+        # ✅ FIXED: Use os.getenv for Render environment variables (NOT st.secrets)
         creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
         if not creds_json_str:
-            logging.error("GSHEET ERROR: 'GOOGLE_SHEETS_CREDENTIALS' env var not found.")
+            logging.error("GSHEET ERROR: Environment variable 'GOOGLE_SHEETS_CREDENTIALS' not found.")
             return None
 
+        # Setup credentials and client
         creds_info = json.loads(creds_json_str)
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
         client = gspread.authorize(creds)
 
+        # Open Google Sheet
         spreadsheet_url = "https://docs.google.com/spreadsheets/d/1SqbFIXim9fVjXQJ8_7ICgBNamCTiYzbTd4DcnVvffv4/edit"
         sheet = client.open_by_url(spreadsheet_url).sheet1 
 
+        # Get all records (Row 1 = keys)
         records = sheet.get_all_records()
 
+        # Search by EXACT column name 'Order_ID'
         for row in records:
-            sheet_order_id = str(row.get('Order_ID', '')).strip()
-            if sheet_order_id == str(order_id).strip():
+            if str(row.get('Order_ID', '')).strip() == str(order_id).strip():
                 return {
-                    'stage': row.get('Stage', 'Pending'),
-                    'paid': row.get('Paid', 'No'),
-                    'biker': row.get('Biker', 'Unassigned'),
-                    'order_time': row.get('Order Time', 'Unknown')
+                    'stage': row.get('Stage', 'Pending'),      # Exact column name
+                    'paid': row.get('Paid', 'No'),             # Exact column name
+                    'biker': row.get('Biker', 'Unassigned'),   # Exact column name
+                    'order_time': row.get('Order Time', 'Unknown') # ✅ FIXED: Key name matches handler
                 }
-
-        logging.warning(f"Order ID '{order_id}' not found in sheet.")
         return None
 
     except Exception as e:
-        logging.error(f"Error in check_order_status_in_sheet: {e}")
+        logging.error(f"Status check failed: {e}")
         return None
-
 # --- HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -636,42 +637,37 @@ async def check_status_command(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_status_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     order_id = update.message.text.strip()
     
+    # Handle back navigation
     if any(kw in update.message.text for kw in ['Back', 'ይመለሱ', 'Menu', 'መነሻ', '🏠']):
         return await start(update, context)
     
+    # Validate Order ID format
     if not order_id.startswith("FD-"):
         await update.message.reply_text(
-            "Invalid Order ID format. Please use the format from your confirmation (e.g., FD-250103-1430).\n\n"
-            "የትዕዛዝ መታወቂያ ቅርጸት ልክ አይደለም። ከማረጋገጫዎ ያውቃቸው ቅርጸት ይጠቀሙ (ለምሳሌ FD-250103-1430)።"
+            "Invalid Order ID format. Please use the format from your confirmation (e.g., FD-250103-1430)."
         )
         return await check_status_command(update, context)
     
+    # ✅ FIXED: Now uses os.getenv and matching key names
     order_info = check_order_status_in_sheet(order_id)
     
     if order_info:
+        # ✅ Uses 'order_time' which matches the key in check_order_status_in_sheet
         status_message = f"""
-📊 **Order Status for `{order_id}` / የትዕዛዝ ሁኔታ ለ `{order_id}`**
-**Current Stage / የአሁኑ ሁኔታ:** {order_info['stage']}
-**Payment Status / የክፍያ ሁኔታ:** {order_info['paid']}
-**Delivery Agent / ማስረከቢያ ኤጀንት:** {order_info['biker']}
-**Order Time / የትዕዛዝ ሰዓት:** {order_info['order_time']}
-
-Thank you for your patience! / ለእርዳታዎ እናመሰግናለን!
+📊 **Order Status for `{order_id}`**
+**Stage:** {order_info['stage']}
+**Paid:** {order_info['paid']}
+**Biker:** {order_info['biker']}
+**Order Time:** {order_info['order_time']}
         """
     else:
-        status_message = get_message('status_not_found', order_id=order_id)
+        status_message = f"Order ID `{order_id}` not found."
     
+    # Guaranteed response to user
     await update.message.reply_text(status_message, parse_mode='Markdown')
     
-    keyboard = [
-        ['🛍 Order / ይዘዙ', '💰 Pricing / ዋጋ'],
-        ['ℹ️ How it Works / እንዴት ይሰራል', '📞 Support / እርዳታ'],
-        ['📋 Design Guidelines / የዲዛይን መመሪያዎች', '📊 Check Status / ሁኔታ ማየት']
-    ]
-    await update.message.reply_text(
-        "Returned to main menu / ወደ ዋናው ምናሌ ተመለሰ",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    )
+    # Return to main menu
+    await start(update, context)
     return ConversationHandler.END
 
 async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
