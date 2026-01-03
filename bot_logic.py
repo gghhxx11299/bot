@@ -22,8 +22,7 @@ BACK_BUTTON_TEXT = "🏠 Back to Menu / ወደ መነሻ ይመለሱ"
 
 # --- STATES ---
 QUANTITY, AGREEMENT, FRONT_IMAGE, BACK_IMAGE, USER_NAME, CONTACT_INFO, DESIGN_CONFIRM = range(7)
-SUPPORT_DESC, SUPPORT_PHONE = range(8, 10)
-CHECK_STATUS_ID = 10
+SUPPORT_DESC, SUPPORT_PHONE = range(7, 9)
 
 # --- MESSAGES ---
 MESSAGES = {
@@ -52,7 +51,6 @@ MESSAGES = {
 1. Our service team will contact you within 1 hour
 2. Design proof will be sent within 24 hours
 3. Production starts after design approval
-Use /status to check order progress anytime.
 """,
         "am": """📋 **የትዕዛዝ ማረጋገጫ** `{order_id}`
 **ዝርዝሮች:**
@@ -67,7 +65,6 @@ Use /status to check order progress anytime.
 1. የአገልግሎት ቡድናችን በ1 ሰዓት ውስጥ እናግኝዎታለን
 2. የዲዛይን ማረጋገጫ በ24 ሰዓት ውስጥ ይላካል
 3. ዲዛይን ከተጸድቀ በኋላ ምርት ይጀምራል
-ሁነታ ለመመልከት /status ይጠቀሙ።
 """
     },
     'order_submitted': {
@@ -97,7 +94,7 @@ Our service team will be in touch with you soon.
 **ቀጣይ ደረጃ:**
 1. 📞 የአገልግሎት ቡድናችን በ1 ሰዓት ውስጥ እናግኝዎታለን
 2. 🎨 የዲዛይን ማረጋገጫ በ24 ሰዓት ውስጥ ይላካል
-3. ⚡ ዲዛይን ከተጸድቀ በኋላ ምርት ይጀምራል
+3. ⚡ ዲዛይን ከተጸድቀ በኋላ �ምርት ይጀምራል
 4. 📦 ማስረከቢያ በ3-5 የስራ ቀናት
 **አጠቃላይ ዝርዝር:**
 • ዕቃዎች: {quantity} ኤንኤፍሲ ቢዝነስ ካርዶች
@@ -113,10 +110,6 @@ Our service team will be in touch with you soon.
 የፋይንዳታ ኤንኤፍሲ ካርዶች ስለመረጡ እናመሰግናለን!
 የአገልግሎት ቡድናችን በቅርብ ጊዜ እናግኝዎታለን።
 """
-    },
-    'status_not_found': {
-        "en": "⚠️ **Order Not Found** \nThe Order ID `{order_id}` does not exist in our system. Please double-check the ID and try again.",
-        "am": "⚠️ **ትዕዛዝ አልተገኘም** \nየትዕዛዝ መታወቂያ `{order_id}` በእኛ ስርዓት ውስጥ የለም። እባክዎ መታወቂያውን እንደገና ያረጋግጡ እና እንደገና ይሞክሩ።"
     }
 }
 
@@ -161,19 +154,22 @@ async def go_back_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     keyboard = [
         ['🛍 Order / ይዘዙ', '💰 Pricing / ዋጋ'],
         ['ℹ️ How it Works / እንዴት ይሰራል', '📞 Support / እርዳታ'],
-        ['📋 Design Guidelines / የዲዛይን መመሪያዎች', '📊 Check Status / ሁኔታ ማየት']
+        ['📋 Design Guidelines / የዲዛይን መመሪያዎች']
     ]
+    
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
     if update.message:
         await update.message.reply_text(
             get_message('welcome'),
-            reply_markup=reply_markup
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
         )
     elif update.callback_query:
         await update.callback_query.message.reply_text(
             get_message('welcome'),
-            reply_markup=reply_markup
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
         )
     
     return ConversationHandler.END
@@ -212,37 +208,11 @@ def save_to_google_sheets(order_data):
         logging.error(f"GSHEET ERROR in save_to_google_sheets: {e}")
         return False
 
-def check_order_status_in_sheet(order_id):
-    try:
-        creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
-        if not creds_json_str:
-            logging.error("GSHEET ERROR: Environment variable 'GOOGLE_SHEETS_CREDENTIALS' not found.")
-            return None
-        creds_info = json.loads(creds_json_str)
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
-        client = gspread.authorize(creds)
-        spreadsheet_url = "https://docs.google.com/spreadsheets/d/1SqbFIXim9fVjXQJ8_7ICgBNamCTiYzbTd4DcnVvffv4/edit"
-        sheet = client.open_by_url(spreadsheet_url).sheet1
-        records = sheet.get_all_records()
-        for row in records:
-            if str(row.get('Order_ID', '')).strip() == str(order_id).strip():
-                return {
-                    'stage': row.get('Stage', 'Pending'),
-                    'paid': row.get('Paid', 'No'),
-                    'biker': row.get('Biker', 'Unassigned'),
-                    'order_time': row.get('Order Time', 'Unknown')
-                }
-        return None
-    except Exception as e:
-        logging.error(f"Status check failed: {e}")
-        return None
-
 # --- MAIN MENU (/start) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await go_back_to_main_menu(update, context)
 
-# --- STATIC PAGES (with back check) ---
+# --- STATIC PAGES (with back button) ---
 async def show_how_it_works(update: Update, context: ContextTypes.DEFAULT_TYPE):
     content_en = """ℹ️ **How It Works**
 **Step 1: Order**
@@ -278,7 +248,7 @@ async def show_how_it_works(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • በአዲስ አበባ ውስጥ 200 ብር ማስረከቢያ
 • ከኢትዮጵያ ውጭ በጠይቅ ላይ (0960375738 ይደውሉ)
 """
-    button = [['🛍 Order Now / አሁን ይዘዙ', BACK_BUTTON_TEXT]]
+    button = [[BACK_BUTTON_TEXT]]
     await update.message.reply_text(
         f"{content_en}\n\n{content_am}",
         parse_mode='Markdown',
@@ -312,7 +282,7 @@ Upload your front design now, or type 'skip' to use our template.
 ✓ ከዲዛይነር ጋር ይገናኙ (ሃሳብ ካለዎት ግን ካላደረጉት)
 የፊት ለፊት ዲዛይንዎን ይጫኑ ወይም 'ዝለል' ይተይቡ እኛን ቅጥ ለመጠቀም።
 """
-    button = [['🛍 Order Now / አሁን ይዘዙ', BACK_BUTTON_TEXT]]
+    button = [[BACK_BUTTON_TEXT]]
     await update.message.reply_text(
         f"{guidelines_en}\n\n{guidelines_am}",
         parse_mode='Markdown',
@@ -338,7 +308,7 @@ async def show_pricing(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • በአዲስ አበባ ውስጥ 200 ብር
 • ከኢትዮጵያ ውጭ በጠይቅ ላይ (0960375738 ይደውሉ)
 """
-    button = [['🛍 Order Now / አሁን ይዘዙ', BACK_BUTTON_TEXT]]
+    button = [[BACK_BUTTON_TEXT]]
     await update.message.reply_text(
         f"{pricing_en}\n\n{pricing_am}",
         parse_mode='Markdown',
@@ -361,6 +331,7 @@ async def get_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
     if is_back_button(text):
         return await go_back_to_main_menu(update, context)
+    
     try:
         qty = int(text.strip())
         if qty <= 0:
@@ -632,34 +603,6 @@ async def confirm_design(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Edit pressed
         return await get_name(update, context)
 
-# --- STATUS CHECK ---
-async def check_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = "Please enter your order ID (e.g., FD-250103-1430):\n\nእባክዎ የትዕዛዝ መታወቂያዎን ያስገቡ (ለምሳሌ FD-250103-1430):"
-    button = [[BACK_BUTTON_TEXT]]
-    await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(button, resize_keyboard=True))
-    return CHECK_STATUS_ID
-
-async def handle_status_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (update.message.text or "").strip()
-    if is_back_button(text):
-        return await go_back_to_main_menu(update, context)
-    if not text.startswith("FD-"):
-        await update.message.reply_text("Invalid Order ID format. Please use the format from your confirmation (e.g., FD-250103-1430).")
-        return await check_status_command(update, context)
-    order_info = check_order_status_in_sheet(text)
-    if order_info:
-        status_message = f"""
-📊 **Order Status for `{text}`**
-**Stage:** {order_info['stage']}
-**Paid:** {order_info['paid']}
-**Biker:** {order_info['biker']}
-**Order Time:** {order_info['order_time']}
-        """
-    else:
-        status_message = get_message('status_not_found', order_id=text)
-    await update.message.reply_text(status_message, parse_mode='Markdown')
-    return await go_back_to_main_menu(update, context)
-
 # --- SUPPORT ---
 async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
@@ -668,30 +611,43 @@ async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ['Other / ሌላ', BACK_BUTTON_TEXT]
     ]
     message = "Select your issue type or describe it:\n\nየችግሩን አይነት ይምረጡ ወይም ይግለጹ:"
-    await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+    await update.message.reply_text(
+        message, 
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    )
     return SUPPORT_DESC
 
 async def support_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     if is_back_button(text):
         return await go_back_to_main_menu(update, context)
+    
     context.user_data['support_type'] = text
     message = "Please describe your problem in detail:\n\nእባክዎ ችግሩን በዝርዝር ይግለጹ:"
     buttons = [[BACK_BUTTON_TEXT]]
-    await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
+    await update.message.reply_text(
+        message, 
+        reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+    )
     return SUPPORT_PHONE
 
 async def handle_support_final(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     if is_back_button(text):
         return await go_back_to_main_menu(update, context)
+    
     phone = text
     if update.message.contact:
         phone = update.message.contact.phone_number
+    
     if not validate_phone(phone):
         buttons = [[BACK_BUTTON_TEXT]]
-        await update.message.reply_text(get_message('invalid_phone'), reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
+        await update.message.reply_text(
+            get_message('invalid_phone'), 
+            reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+        )
         return SUPPORT_PHONE
+    
     context.user_data['support_msg'] = text
     admin_msg = f"""
 🆘 **SUPPORT REQUEST / የድጋፍ ጥያቄ**
@@ -714,6 +670,7 @@ async def handle_support_final(update: Update, context: ContextTypes.DEFAULT_TYP
             "Message received. We'll contact you soon.\n\nመልእክት ተቀብሎአል። በቅርብ ጊዜ እናግኝዎታለን።",
             reply_markup=ReplyKeyboardRemove()
         )
+    
     return await go_back_to_main_menu(update, context)
 
 # --- BACK BUTTON HANDLER FOR ALL MESSAGES ---
@@ -730,16 +687,20 @@ def setup_application() -> Application:
     app = Application.builder().token(TOKEN).build()
     app.add_error_handler(lambda u, c: logging.error(f"Update {u} caused error {c.error}"))
     
-    # Add back button handler first
-    app.add_handler(MessageHandler(filters.Regex(re.escape(BACK_BUTTON_TEXT)), handle_back_button))
-    
+    # Main menu handlers
     app.add_handler(CommandHandler('start', start))
-    app.add_handler(MessageHandler(filters.Regex('Pricing|ዋጋ'), show_pricing))
-    app.add_handler(MessageHandler(filters.Regex('Design Guidelines|የዲዛይን መመሪያዎች'), show_design_guidelines))
-    app.add_handler(MessageHandler(filters.Regex('How it Works|እንዴት ይሰራል'), show_how_it_works))
     
+    # Static page handlers
+    app.add_handler(MessageHandler(filters.Regex('^Pricing|^ዋጋ'), show_pricing))
+    app.add_handler(MessageHandler(filters.Regex('^Design Guidelines|^የዲዛይን መመሪያዎች'), show_design_guidelines))
+    app.add_handler(MessageHandler(filters.Regex('^How it Works|^እንዴት ይሰራል'), show_how_it_works))
+    
+    # Back button handler
+    app.add_handler(MessageHandler(filters.Regex(f'^{BACK_BUTTON_TEXT}$'), handle_back_button))
+    
+    # Order conversation handler
     order_conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex('Order|ይዘዙ|Order Now|አሁን ይዘዙ'), order_start)],
+        entry_points=[MessageHandler(filters.Regex('^Order|^ይዘዙ|^Order Now|^አሁን ይዘዙ'), order_start)],
         states={
             QUANTITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_quantity)],
             AGREEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_agreement)],
@@ -751,36 +712,27 @@ def setup_application() -> Application:
         },
         fallbacks=[
             CommandHandler('start', start),
-            MessageHandler(filters.Regex(re.escape(BACK_BUTTON_TEXT)), go_back_to_main_menu),
+            MessageHandler(filters.Regex(f'^{BACK_BUTTON_TEXT}$'), go_back_to_main_menu),
         ],
+        allow_reentry=True
     )
     
+    # Support conversation handler
     support_conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex('Support|እርዳታ'), support_start)],
+        entry_points=[MessageHandler(filters.Regex('^Support|^እርዳታ'), support_start)],
         states={
             SUPPORT_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, support_description)],
             SUPPORT_PHONE: [MessageHandler(filters.CONTACT | filters.TEXT, handle_support_final)],
         },
         fallbacks=[
             CommandHandler('start', start),
-            MessageHandler(filters.Regex(re.escape(BACK_BUTTON_TEXT)), go_back_to_main_menu),
+            MessageHandler(filters.Regex(f'^{BACK_BUTTON_TEXT}$'), go_back_to_main_menu),
         ],
+        allow_reentry=True
     )
     
-    status_conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex('Check Status|ሁኔታ ማየት'), check_status_command)],
-        states={
-            CHECK_STATUS_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_status_check)],
-        },
-        fallbacks=[
-            CommandHandler('start', start),
-            MessageHandler(filters.Regex(re.escape(BACK_BUTTON_TEXT)), go_back_to_main_menu),
-        ],
-    )
-
     app.add_handler(order_conv_handler)
     app.add_handler(support_conv_handler)
-    app.add_handler(status_conv_handler)
     
     return app
 
