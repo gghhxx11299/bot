@@ -346,59 +346,41 @@ def save_to_google_sheets(order_data):
 # --- STATUS CHECK FUNCTION ---
 def check_order_status_in_sheet(order_id):
     try:
-        # 1. Get the credentials JSON string from environment variable
-        creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
+        # 1. Access the secret directly from Streamlit's secrets (Matches your Render setup)
+        creds_json_str = st.secrets["GCP_JSON"]
+        
         if not creds_json_str:
-            logging.error("GSHEET ERROR: Environment variable 'GOOGLE_SHEETS_CREDENTIALS' not found.")
+            logging.error("GSHEET ERROR: Secret 'GCP_JSON' not found.")
             return None
 
-        # 2. Parse the JSON string into a Python dictionary
-        try:
-            creds_info = json.loads(creds_json_str)
-        except json.JSONDecodeError as e:
-            logging.error(f"GSHEET ERROR: Failed to parse credentials JSON: {e}")
-            return None
-
-        # 3. Define the required scope
-        scope = [
-            "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/drive"
-        ]
-
-        # 4. Create credentials object directly from the dictionary
+        # 2. Setup Credentials and Client
+        creds_info = json.loads(creds_json_str)
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
-
-        # 5. Authorize the gspread client
         client = gspread.authorize(creds)
 
-        # 6. Open the specific Google Sheet using its URL
+        # 3. Open the Spreadsheet
         spreadsheet_url = "https://docs.google.com/spreadsheets/d/1SqbFIXim9fVjXQJ8_7ICgBNamCTiYzbTd4DcnVvffv4/edit"
-        sheet = client.open_by_url(spreadsheet_url).sheet1 # Opens the first sheet
+        sheet = client.open_by_url(spreadsheet_url).sheet1 
 
-        # 7. Find the row matching the Order_ID (column 9 / I)
-        try:
-            cell = sheet.find(order_id, in_column=9) # Order_ID is in column I (index 9)
-            row_index = cell.row
-            # Get the entire row data
-            row_data = sheet.row_values(row_index)
-            # Ensure the row has enough columns
-            while len(row_data) < 12:
-                row_data.append("")
-            # Extract relevant status information
-            # Columns: 0:Name, 1:Contact, 2:Qty, 3:money, 4:Stage, 5:Total, 6:Biker, 7:Order Time, 8:Order_ID, 9:Paid, 10:Called, 11:Exported
-            stage = row_data[4] if len(row_data) > 4 else "Unknown"
-            paid = row_data[9] if len(row_data) > 9 else "Unknown"
-            biker = row_data[6] if len(row_data) > 6 else "Unassigned"
-            
-            return {
-                'stage': stage,
-                'paid': paid,
-                'biker': biker,
-                'order_time': row_data[7] if len(row_data) > 7 else "Unknown"
-            }
-            
-        except gspread.exceptions.CellNotFound:
-            return None
+        # 4. Get all data as a list of dictionaries
+        # This maps Column headers (Row 1) to values (Row 2, 3...)
+        records = sheet.get_all_records()
+
+        # 5. Search for the specific Order_ID
+        for row in records:
+            # Convert both to string to ensure a match (e.g., "1001" == "1001")
+            if str(row.get('Order_ID')).strip() == str(order_id).strip():
+                return {
+                    'stage': row.get('Stage', 'Pending'),
+                    'paid': row.get('Paid', 'No'),
+                    'biker': row.get('Biker', 'Unassigned'),
+                    'order_time': row.get('Order Time', 'Unknown')
+                }
+
+        # If we get through the whole loop without a match
+        logging.warning(f"Order ID {order_id} not found in sheet.")
+        return None
 
     except Exception as e:
         logging.error(f"Error during status check: {e}")
