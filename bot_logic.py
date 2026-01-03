@@ -163,10 +163,19 @@ async def go_back_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYP
         ['ℹ️ How it Works / እንዴት ይሰራል', '📞 Support / እርዳታ'],
         ['📋 Design Guidelines / የዲዛይን መመሪያዎች', '📊 Check Status / ሁኔታ ማየት']
     ]
-    await update.message.reply_text(
-        get_message('welcome'),
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    )
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
+    if update.message:
+        await update.message.reply_text(
+            get_message('welcome'),
+            reply_markup=reply_markup
+        )
+    elif update.callback_query:
+        await update.callback_query.message.reply_text(
+            get_message('welcome'),
+            reply_markup=reply_markup
+        )
+    
     return ConversationHandler.END
 
 # --- GOOGLE SHEETS (NO VIP COLUMN) ---
@@ -235,8 +244,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- STATIC PAGES (with back check) ---
 async def show_how_it_works(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if is_back_button(update.message.text):
-        return await go_back_to_main_menu(update, context)
     content_en = """ℹ️ **How It Works**
 **Step 1: Order**
 • Click "Order" and specify quantity
@@ -279,8 +286,6 @@ async def show_how_it_works(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def show_design_guidelines(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if is_back_button(update.message.text):
-        return await go_back_to_main_menu(update, context)
     guidelines_en = """📋 **Design Guidelines for NFC Business Cards**
 **Required Specifications:**
 • **Format:** PNG or JPG (transparent background preferred)
@@ -315,8 +320,6 @@ Upload your front design now, or type 'skip' to use our template.
     )
 
 async def show_pricing(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if is_back_button(update.message.text):
-        return await go_back_to_main_menu(update, context)
     pricing_en = """💰 **Pricing for NFC Business Cards**
 **Price Breakdown:**
 • 1-4 cards: 1,200 ETB each
@@ -631,8 +634,6 @@ async def confirm_design(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- STATUS CHECK ---
 async def check_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if is_back_button(update.message.text):
-        return await go_back_to_main_menu(update, context)
     message = "Please enter your order ID (e.g., FD-250103-1430):\n\nእባክዎ የትዕዛዝ መታወቂያዎን ያስገቡ (ለምሳሌ FD-250103-1430):"
     button = [[BACK_BUTTON_TEXT]]
     await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(button, resize_keyboard=True))
@@ -661,8 +662,6 @@ async def handle_status_check(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # --- SUPPORT ---
 async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if is_back_button(update.message.text):
-        return await go_back_to_main_menu(update, context)
     keyboard = [
         ['Design Issue / የዲዛይን ችግር', 'Order Status / የትዕዛዝ ሁኔታ'],
         ['Payment Question / የክፍያ ጥያቄ', 'Technical Problem / የቴክኒክ ችግር'],
@@ -717,6 +716,11 @@ async def handle_support_final(update: Update, context: ContextTypes.DEFAULT_TYP
         )
     return await go_back_to_main_menu(update, context)
 
+# --- BACK BUTTON HANDLER FOR ALL MESSAGES ---
+async def handle_back_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle back button from any state"""
+    return await go_back_to_main_menu(update, context)
+
 # --- SETUP ---
 def setup_application() -> Application:
     logging.basicConfig(
@@ -725,12 +729,14 @@ def setup_application() -> Application:
     )
     app = Application.builder().token(TOKEN).build()
     app.add_error_handler(lambda u, c: logging.error(f"Update {u} caused error {c.error}"))
+    
+    # Add back button handler first
+    app.add_handler(MessageHandler(filters.Regex(re.escape(BACK_BUTTON_TEXT)), handle_back_button))
+    
     app.add_handler(CommandHandler('start', start))
-    app.add_handler(CommandHandler('status', check_status_command))
     app.add_handler(MessageHandler(filters.Regex('Pricing|ዋጋ'), show_pricing))
     app.add_handler(MessageHandler(filters.Regex('Design Guidelines|የዲዛይን መመሪያዎች'), show_design_guidelines))
     app.add_handler(MessageHandler(filters.Regex('How it Works|እንዴት ይሰራል'), show_how_it_works))
-    app.add_handler(MessageHandler(filters.Regex('Check Status|ሁኔታ ማየት'), check_status_command))
     
     order_conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex('Order|ይዘዙ|Order Now|አሁን ይዘዙ'), order_start)],
@@ -775,4 +781,9 @@ def setup_application() -> Application:
     app.add_handler(order_conv_handler)
     app.add_handler(support_conv_handler)
     app.add_handler(status_conv_handler)
+    
     return app
+
+if __name__ == '__main__':
+    application = setup_application()
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
