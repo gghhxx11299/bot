@@ -9,162 +9,34 @@ import re
 from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import json  # Added for parsing JSON credentials from env
+import json
 
-# --- BILINGUAL SYSTEM PROMPT (for reference only) ---
-SYSTEM_PROMPT = """
-You are the FineData Assistant for an Ethiopian startup selling premium laser-engraved NFC business cards.
-Respond in English or Amharic based on user's language preference.
-- Price: 1,200 ETB (1-4 cards), 1,100 ETB (5-9 cards), 1,000 ETB (10+ cards).
-- Key Feature: One-tap digital contact sharing via NFC.
-- Payment: CBE (1000728253499 - Geabral) or Telebirr (0960375738 - Gabriel).
-- Delivery: 200 ETB anywhere in Addis Ababa; outside Ethiopia upon request (call 0960375738).
-- Location: Addis Ababa.
-Be professional. Keep answers short and helpful.
-Respond in same language as user query.
-"""
+# --- CONFIG (from environment variables) ---
+TOKEN = os.getenv("BOT_TOKEN")
+MY_ADMIN_ID = os.getenv("ADMIN_ID")
+if not TOKEN or not MY_ADMIN_ID:
+    raise ValueError("Missing required environment variables: BOT_TOKEN, ADMIN_ID")
 
-# --- BILINGUAL DESIGN SPECIFICATIONS ---
-DESIGN_GUIDELINES_EN = """
-📋 **Design Guidelines for NFC Business Cards**
-**Required Specifications:**
-• **Format:** PNG or JPG (transparent background preferred)
-• **Dimensions:** 3.5 × 2 inches (1050 × 600 pixels)
-• **Resolution:** 300 DPI minimum
-• **Color Mode:** CMYK for best printing results
-• **Safe Zone:** Keep critical content 0.125" from edges
-**Design Options:**
-✓ Upload your own design
-✓ Use our template
-✓ Connect with a designer (if you have an idea but haven't made it yet)
-Upload your front design now, or type 'skip' to use our template.
-"""
+# --- STATES ---
+QUANTITY, AGREEMENT, FRONT_IMAGE, BACK_IMAGE, USER_NAME, CONTACT_INFO, DESIGN_CONFIRM = range(7)
+SUPPORT_DESC, SUPPORT_PHONE = range(8, 10)
+CHECK_STATUS_ID = 10
 
-DESIGN_GUIDELINES_AM = """
-📋 **የኤንኤፍሲ ቢዝነስ ካርዶች ዲዛይን መመሪያዎች**
-**የሚፈለጉ ዝርዝሮች:**
-• **ፎርማት:** PNG ወይም JPG (ባዶ በስተጀርባ የተዘጋጀ)
-• **ልኬቶች:** 3.5 × 2 ኢንች (1050 × 600 ፒክሰል)
-• **ጥራት:** ደቂቃ 300 DPI
-• **የቀለም ሞድ:** ለመስተጋብር CMYK ይጠቀሙ
-• **ደህንነት ቦታ:** አስፈላጊ ነገሮችን ከጫፍ 0.125" አርቀው ያስቀምጡ
-**የዲዛይን አማራጮች:**
-✓ የራስዎን ዲዛይን ይጫኑ
-✓ የእኛን ቅጥ ይጠቀሙ
-✓ ከዲዛይነር ጋር ይገናኙ (ሃሳብ ካለዎት ግን ካላደረጉት)
-የፊት ለፊት ዲዛይንዎን ይጫኑ ወይም 'ዝለል' ይተይቡ እኛን ቅጥ ለመጠቀም።
-"""
-
-# --- PRICING INFO ---
-PRICING_EN = """
-💰 **Pricing for NFC Business Cards**
-**Price Breakdown:**
-• 1-4 cards: 1,200 ETB each
-• 5-9 cards: 1,100 ETB each
-• 10+ cards: 1,000 ETB each
-**Delivery:**
-• 200 ETB in Addis Ababa
-• Outside Ethiopia upon request (call 0960375738)
-"""
-
-PRICING_AM = """
-💰 **የኤንኤፍሲ ቢዝነስ ካርዶች ዋጋ**
-**የዋጋ ዝርዝር:**
-• 1-4 ካርዶች: 1,200 ብር እያንዳንዱ
-• 5-9 ካርዶች: 1,100 ብር እያንዳንዱ
-• 10+ ካርዶች: 1,000 ብር እያንዳንዱ
-**ማስረከቢያ:**
-• በአዲስ አበባ ውስጥ 200 ብር
-• ከኢትዮጵያ ውጭ በጠይቅ ላይ (0960375738 ይደውሉ)
-"""
-
-# --- HOW IT WORKS INFO ---
-HOW_IT_WORKS_EN = """
-ℹ️ **How It Works**
-**Step 1: Order**
-• Click "Order" and specify quantity
-• Upload your design or use our template
-**Step 2: Design**
-• We'll send design proof within 24 hours
-• Approve or request changes
-**Step 3: Payment**
-• You'll be contacted with payment details
-• Service team will handle payment confirmation
-**Step 4: Production**
-• Cards are printed and NFC chips programmed
-• Quality check completed
-**Step 5: Delivery**
-• 200 ETB delivery in Addis Ababa
-• Outside Ethiopia upon request (call 0960375738)
-"""
-
-HOW_IT_WORKS_AM = """
-ℹ️ **እንዴት ይሰራል**
-**ደረጃ 1: ትዕዛዝ**
-• "ይዘዙ" ይጫኑ እና ብዛት ይግለጹ
-• ዲዛይንዎን ይጫኑ ወይም እኛን ቅጥ ይጠቀሙ
-**ደረጃ 2: ዲዛይን**
-• በ24 ሰዓት ውስጥ የዲዛይን ማረጋገጫ እናስገባለን
-• ያረጋግጡ ወይም ለውጦች ይጠይቁ
-**ደረጃ 3: ክፍያ**
-• ከክፍያ ዝርዝሮች ጋር እናግኝዎታለን
-• የአገልግሎት ቡድን የክፍያ ማረጋገጫ ያስተናግዳል
-**ደረጃ 4: ምርት**
-• ካርዶቹ ተሰብስባሉ እና ኤንኤፍሲ ቻይፎች ይቀመጣሉ
-• የጥራት ማረጋገጫ ተፈጽሟል
-**ደረጃ 5: ማስረከቢያ**
-• በአዲስ አበባ ውስጥ 200 ብር ማስረከቢያ
-• ከኢትዮጵያ ውጭ በጠይቅ ላይ (0960375738 ይደውሉ)
-"""
-
-# --- BILINGUAL MESSAGES ---
+# --- MESSAGES DICTIONARY ---
 MESSAGES = {
-    'welcome': {
-        'en': "Welcome to FineData NFC Cards!",
-        'am': "ወደ ፋይንዳታ ኤንኤፍሲ ካርዶች እንኳን በደህና መጡ!"
-    },
-    'order_start': {
-        'en': "Starting new order: `{order_id}`\nHow many NFC cards would you like?",
-        'am': "አዲስ ትዕዛዝ በመጀመር ላይ: `{order_id}`\nስንት ኤንኤፍሲ ካርዶች ይፈልጋሉ?"
-    },
-    'invalid_number': {
-        'en': "Please enter a valid number. How many cards?",
-        'am': "እባክዎ ትክክለኛ ቁጥር ያስገቡ። ስንት ካርዶች ይፈልጋሉ?"
-    },
-    'price_breakdown': {
-        'en': "**Price Breakdown:**\n• {qty} cards × {unit_price} ETB = {total} ETB\n",
-        'am': "**የዋጋ ዝርዝር:**\n• {qty} ካርዶች × {unit_price} ብር = {total} ብር\n"
-    },
-    'tip_small': {
-        'en': "💡 **Tip:** Order 5+ cards to get 1,100 ETB each!",
-        'am': "💡 **መመሪያ:** 5 ወይም ከዚያ በላይ ካርዶች ብታዘዙ እያንዳንዱ 1,100 ብር ይሆናል!"
-    },
-    'tip_medium': {
-        'en': "💡 **Tip:** Order 10+ cards to get 1,000 ETB each!",
-        'am': "💡 **መመሪያ:** 10 ወይም ከዚያ በላይ ካርዶች ብታዘዙ እያንዳንዱ 1,000 ብር ይሆናል!"
-    },
-    'confirm_order': {
-        'en': "Total: *{total} ETB*\nProceed with this order?",
-        'am': "ጠቅላላ: *{total} ብር*\nበዚህ ትዕዛዝ መቀጠል ይፈልጋሉ?"
-    },
-    'order_cancelled': {
-        'en': "Order cancelled.",
-        'am': "ትዕዛዙ ተሰርዟል።"
-    },
-    'enter_name': {
-        'en': "Now enter your full name for the cards (in English):",
-        'am': "አሁን ለካርዶቹ ሙሉ ስምዎን ያስገቡ (በእንግሊዝኛ):"
-    },
-    'name_saved': {
-        'en': "Name saved: {name}\nNow please enter your phone number for order updates:",
-        'am': "ስምዎ ተቀብሏል፡ {name}\nአሁን ለትዕዛዝ ዝርዝሮች ስልክ ቁጥርዎን ያስገቡ:"
-    },
-    'invalid_phone': {
-        'en': "Please enter a valid Ethiopian phone number (e.g., 0912345678):",
-        'am': "እባክዎ ትክክለኛ የኢትዮጵያ ስልክ ቁጥር ያስገቡ (ለምሳሌ፡ 0912345678):"
-    },
+    'welcome': {"en": "Welcome to FineData NFC Cards!", "am": "ወደ ፋይንዳታ ኤንኤፍሲ ካርዶች እንኳን በደህና መጡ!"},
+    'order_start': {"en": "Starting new order: `{order_id}`\nHow many NFC cards would you like?", "am": "አዲስ ትዕዛዝ በመጀመር ላይ: `{order_id}`\nስንት ኤንኤፍሲ ካርዶች ይፈልጋሉ?"},
+    'invalid_number': {"en": "Please enter a valid number. How many cards?", "am": "እባክዎ ትክክለኛ ቁጥር ያስገቡ። ስንት ካርዶች ይፈልጋሉ?"},
+    'price_breakdown': {"en": "**Price Breakdown:**\n• {qty} cards × {unit_price} ETB = {total} ETB\n", "am": "**የዋጋ ዝርዝር:**\n• {qty} ካርዶች × {unit_price} ብር = {total} ብር\n"},
+    'tip_small': {"en": "💡 **Tip:** Order 5+ cards to get 1,100 ETB each!", "am": "💡 **መመሪያ:** 5 ወይም ከዚያ በላይ ካርዶች ብታዘዙ እያንዳንዱ 1,100 ብር ይሆናል!"},
+    'tip_medium': {"en": "💡 **Tip:** Order 10+ cards to get 1,000 ETB each!", "am": "💡 **መመሪያ:** 10 ወይም ከዚያ በላይ ካርዶች ብታዘዙ እያንዳንዱ 1,000 ብር ይሆናል!"},
+    'confirm_order': {"en": "Total: *{total} ETB*\nProceed with this order?", "am": "ጠቅላላ: *{total} ብር*\nበዚህ ትዕዛዝ መቀጠል ይፈልጋሉ?"},
+    'order_cancelled': {"en": "Order cancelled.", "am": "ትዕዛዙ ተሰርዟል።"},
+    'enter_name': {"en": "Now enter your full name for the cards (in English):", "am": "አሁን ለካርዶቹ ሙሉ ስምዎን ያስገቡ (በእንግሊዝኛ):"},
+    'name_saved': {"en": "Name saved: {name}\nNow please enter your phone number for order updates:", "am": "ስምዎ ተቀብሏል፡ {name}\nአሁን ለትዕዛዝ ዝርዝሮች ስልክ ቁጥርዎን ያስገቡ:"},
+    'invalid_phone': {"en": "Please enter a valid Ethiopian phone number (e.g., 0912345678):", "am": "እባክዎ ትክክለኛ የኢትዮጵያ ስልክ ቁጥር ያስገቡ (ለምሳሌ፡ 0912345678):"},
     'order_confirmation': {
-        'en': """📋 **ORDER CONFIRMATION** `{order_id}`
+        "en": """📋 **ORDER CONFIRMATION** `{order_id}`
 **Order Details:**
 • Name: {name}
 • Phone: {phone}
@@ -179,7 +51,7 @@ MESSAGES = {
 3. Production starts after design approval
 Use /status to check order progress anytime.
 """,
-        'am': """📋 **የትዕዛዝ ማረጋገጫ** `{order_id}`
+        "am": """📋 **የትዕዛዝ ማረጋገጫ** `{order_id}`
 **ዝርዝሮች:**
 • ስም: {name}
 • ስልክ: {phone}
@@ -196,7 +68,7 @@ Use /status to check order progress anytime.
 """
     },
     'order_submitted': {
-        'en': """✅ **ORDER SUBMITTED SUCCESSFULLY!**
+        "en": """✅ **ORDER SUBMITTED SUCCESSFULLY!**
 Your order `{order_id}` has been received.
 **What happens next:**
 1. 📞 Our service team will contact you within 1 hour
@@ -217,7 +89,7 @@ Your order `{order_id}` has been received.
 Thank you for choosing FineData NFC Cards!
 Our service team will be in touch with you soon.
 """,
-        'am': """✅ **ትዕዛዎ በተሳካ ሁኔታ ተቀብሏል!**
+        "am": """✅ **ትዕዛዎ በተሳካ ሁኔታ ተቀብሏል!**
 የእርስዎ ትዕዛዝ `{order_id}` ተቀብሏል።
 **ቀጣይ ደረጃ:**
 1. 📞 የአገልግሎት ቡድናችን በ1 ሰዓት ውስጥ እናግኝዎታለን
@@ -240,25 +112,13 @@ Our service team will be in touch with you soon.
 """
     },
     'status_not_found': {
-        'en': "Order ID `{order_id}` not found. Please check the ID and try again.",
-        'am': "ትዕዛዝ መታወቂያ `{order_id}` አልተገኘም። እባክዎ መታወቂያውን ያረጋግጡ እና እንደገና ይሞክሩ።"
+        "en": "⚠️ **Order Not Found** \nThe Order ID `{order_id}` does not exist in our system. Please double-check the ID and try again.",
+        "am": "⚠️ **ትዕዛዝ አልተገኘም** \nየትዕዛዝ መታወቂያ `{order_id}` በእኛ ስርዓት ውስጥ የለም። እባክዎ መታወቂያውን እንደገና ያረጋግጡ እና እንደገና ይሞክሩ።"
     }
 }
 
-# --- CONFIG (from environment variables) ---
-TOKEN = os.getenv("BOT_TOKEN")
-MY_ADMIN_ID = os.getenv("ADMIN_ID")
-if not TOKEN or not MY_ADMIN_ID:
-    raise ValueError("Missing required environment variables: BOT_TOKEN, ADMIN_ID")
-
-# --- STATES ---
-QUANTITY, AGREEMENT, FRONT_IMAGE, BACK_IMAGE, USER_NAME, CONTACT_INFO, DESIGN_CONFIRM = range(7)
-SUPPORT_DESC, SUPPORT_PHONE = range(8, 10)
-CHECK_STATUS_ID = 10  # New state for checking status
-
 # --- HELPERS ---
 def get_message(key, **kwargs):
-    # Always return both English and Amharic
     en_msg = MESSAGES.get(key, {}).get('en', '')
     am_msg = MESSAGES.get(key, {}).get('am', '')
     if kwargs:
@@ -278,43 +138,26 @@ def validate_phone(phone):
     return bool(re.match(eth_pattern, str(phone)))
 
 def generate_order_id():
-    # Shorter format: FD-YYMMDD-HHMM (e.g., FD-250103-1430)
+    # Shorter, cleaner format: FD-YYMMDD-HHMM
     return f"FD-{datetime.now().strftime('%y%m%d-%H%M')}"
 
-# --- MODIFIED GOOGLE SHEETS FUNCTION ---
+# --- GOOGLE SHEETS FUNCTIONS ---
 def save_to_google_sheets(order_data):
+    """Saves a new order to the Google Sheet."""
     try:
-        # 1. Get the credentials JSON string from environment variable
-        creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS") # Use the name you set in your platform
+        creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
         if not creds_json_str:
-            logging.error("GSHEET ERROR: Environment variable 'GOOGLE_SHEETS_CREDENTIALS' not found.")
+            logging.error("GSHEET ERROR: 'GOOGLE_SHEETS_CREDENTIALS' env var not found.")
             return False
 
-        # 2. Parse the JSON string into a Python dictionary
-        try:
-            creds_info = json.loads(creds_json_str)
-        except json.JSONDecodeError as e:
-            logging.error(f"GSHEET ERROR: Failed to parse credentials JSON: {e}")
-            return False
-
-        # 3. Define the required scope
-        scope = [
-            "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/drive"
-        ]
-
-        # 4. Create credentials object directly from the dictionary
+        creds_info = json.loads(creds_json_str)
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
-
-        # 5. Authorize the gspread client
         client = gspread.authorize(creds)
 
-        # 6. Open the specific Google Sheet using its URL
         spreadsheet_url = "https://docs.google.com/spreadsheets/d/1SqbFIXim9fVjXQJ8_7ICgBNamCTiYzbTd4DcnVvffv4/edit"
-        sheet = client.open_by_url(spreadsheet_url).sheet1 # Opens the first sheet
+        sheet = client.open_by_url(spreadsheet_url).sheet1
 
-        # 7. Prepare the new row data matching your EXACT spreadsheet columns:
-        # Name	Contact	Qty	money	Stage	Total	Biker	Order Time	Order_ID	Paid	Called	Exported
         new_row = [
             order_data.get('full_name', ''),           # Name
             order_data.get('phone', ''),               # Contact
@@ -329,61 +172,49 @@ def save_to_google_sheets(order_data):
             "No",                                      # Called
             "No"                                       # Exported
         ]
-
-        # 8. Append the new row to the sheet
         sheet.append_row(new_row)
-        logging.info(f"Successfully saved order {order_data.get('order_id', 'N/A')} to Google Sheets.")
+        logging.info(f"Saved order {order_data.get('order_id')} to Google Sheets.")
         return True
 
-    except gspread.exceptions.APIError as e:
-        # Handle specific Google Sheets API errors
-        logging.error(f"GSHEET API ERROR: {e.response.status_code} - {e.response.json()}")
-        return False
     except Exception as e:
-        # Handle any other errors
-        logging.error(f"GSHEET ERROR: {e}")
+        logging.error(f"GSHEET ERROR in save_to_google_sheets: {e}")
         return False
 
-# --- STATUS CHECK FUNCTION ---
-# --- STATUS CHECK FUNCTION (FIXED FOR COLUMN CASE) ---
 def check_order_status_in_sheet(order_id):
+    """Fetches order status from Google Sheet using the exact 'Order_ID' column."""
     try:
-        # 1. Get credentials from environment variable
         creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
         if not creds_json_str:
-            logging.error("GSHEET ERROR: Environment variable 'GOOGLE_SHEETS_CREDENTIALS' not found.")
+            logging.error("GSHEET ERROR: 'GOOGLE_SHEETS_CREDENTIALS' env var not found.")
             return None
 
-        # 2. Setup client
         creds_info = json.loads(creds_json_str)
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
         client = gspread.authorize(creds)
 
-        # 3. Open sheet
         spreadsheet_url = "https://docs.google.com/spreadsheets/d/1SqbFIXim9fVjXQJ8_7ICgBNamCTiYzbTd4DcnVvffv4/edit"
         sheet = client.open_by_url(spreadsheet_url).sheet1 
 
-        # 4. Get all records (this uses Row 1 as keys)
         records = sheet.get_all_records()
 
-        # 5. Search using EXACT COLUMN NAMES from your sheet
         for row in records:
-            # Compare against the EXACT header: 'Order_ID'
-            if str(row.get('Order_ID', '')).strip() == str(order_id).strip():
+            sheet_order_id = str(row.get('Order_ID', '')).strip()
+            if sheet_order_id == str(order_id).strip():
                 return {
-                    'stage': row.get('Stage', 'Pending'),      # Exact header: 'Stage'
-                    'paid': row.get('Paid', 'No'),             # Exact header: 'Paid'
-                    'biker': row.get('Biker', 'Unassigned'),   # Exact header: 'Biker'
-                    'order_time': row.get('Order Time', 'Unknown') # Exact header: 'Order Time'
+                    'stage': row.get('Stage', 'Pending'),
+                    'paid': row.get('Paid', 'No'),
+                    'biker': row.get('Biker', 'Unassigned'),
+                    'order_time': row.get('Order Time', 'Unknown')
                 }
 
-        logging.warning(f"Order ID {order_id} not found in sheet.")
+        logging.warning(f"Order ID '{order_id}' not found in sheet.")
         return None
 
     except Exception as e:
-        logging.error(f"Error during status check: {e}")
+        logging.error(f"Error in check_order_status_in_sheet: {e}")
         return None
+
 # --- HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -399,8 +230,40 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def show_how_it_works(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    content_en = HOW_IT_WORKS_EN
-    content_am = HOW_IT_WORKS_AM
+    content_en = """ℹ️ **How It Works**
+**Step 1: Order**
+• Click "Order" and specify quantity
+• Upload your design or use our template
+**Step 2: Design**
+• We'll send design proof within 24 hours
+• Approve or request changes
+**Step 3: Payment**
+• You'll be contacted with payment details
+• Service team will handle payment confirmation
+**Step 4: Production**
+• Cards are printed and NFC chips programmed
+• Quality check completed
+**Step 5: Delivery**
+• 200 ETB delivery in Addis Ababa
+• Outside Ethiopia upon request (call 0960375738)
+"""
+    content_am = """ℹ️ **እንዴት ይሰራል**
+**ደረጃ 1: ትዕዛዝ**
+• "ይዘዙ" ይጫኑ እና ብዛት ይግለጹ
+• ዲዛይንዎን ይጫኑ ወይም እኛን ቅጥ ይጠቀሙ
+**ደረጃ 2: ዲዛይን**
+• በ24 ሰዓት ውስጥ የዲዛይን ማረጋገጫ እናስገባለን
+• ያረጋግጡ ወይም ለውጦች ይጠይቁ
+**ደረጃ 3: ክፍያ**
+• ከክፍያ ዝርዝሮች ጋር እናግኝዎታለን
+• የአገልግሎት ቡድን የክፍያ ማረጋገጫ ያስተናግዳል
+**ደረጃ 4: ምርት**
+• ካርዶቹ ተሰብስባሉ እና ኤንኤፍሲ ቻይፎች ይቀመጣሉ
+• የጥራት ማረጋገጫ ተፈጽሟል
+**ደረጃ 5: ማስረከቢያ**
+• በአዲስ አበባ ውስጥ 200 ብር ማስረከቢያ
+• ከኢትዮጵያ ውጭ በጠይቅ ላይ (0960375738 ይደውሉ)
+"""
     button = [['🛍 Order Now / አሁን ይዘዙ', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
     await update.message.reply_text(
         f"{content_en}\n\n{content_am}",
@@ -409,8 +272,32 @@ async def show_how_it_works(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def show_design_guidelines(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    guidelines_en = DESIGN_GUIDELINES_EN
-    guidelines_am = DESIGN_GUIDELINES_AM
+    guidelines_en = """📋 **Design Guidelines for NFC Business Cards**
+**Required Specifications:**
+• **Format:** PNG or JPG (transparent background preferred)
+• **Dimensions:** 3.5 × 2 inches (1050 × 600 pixels)
+• **Resolution:** 300 DPI minimum
+• **Color Mode:** CMYK for best printing results
+• **Safe Zone:** Keep critical content 0.125" from edges
+**Design Options:**
+✓ Upload your own design
+✓ Use our template
+✓ Connect with a designer (if you have an idea but haven't made it yet)
+Upload your front design now, or type 'skip' to use our template.
+"""
+    guidelines_am = """📋 **የኤንኤፍሲ ቢዝነስ ካርዶች ዲዛይን መመሪያዎች**
+**የሚፈለጉ ዝርዝሮች:**
+• **ፎርማት:** PNG ወይም JPG (ባዶ በስተጀርባ የተዘጋጀ)
+• **ልኬቶች:** 3.5 × 2 ኢንች (1050 × 600 ፒክሰል)
+• **ጥራት:** ደቂቃ 300 DPI
+• **የቀለም ሞድ:** ለመስተጋብር CMYK ይጠቀሙ
+• **ደህንነት ቦታ:** አስፈላጊ ነገሮችን ከጫፍ 0.125" አርቀው ያስቀምጡ
+**የዲዛይን አማራጮች:**
+✓ የራስዎን ዲዛይን ይጫኑ
+✓ የእኛን ቅጥ ይጠቀሙ
+✓ ከዲዛይነር ጋር ይገናኙ (ሃሳብ ካለዎት ግን ካላደረጉት)
+የፊት ለፊት ዲዛይንዎን ይጫኑ ወይም 'ዝለል' ይተይቡ እኛን ቅጥ ለመጠቀም።
+"""
     button = [['🛍 Order Now / አሁን ይዘዙ', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
     await update.message.reply_text(
         f"{guidelines_en}\n\n{guidelines_am}",
@@ -419,8 +306,24 @@ async def show_design_guidelines(update: Update, context: ContextTypes.DEFAULT_T
     )
 
 async def show_pricing(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pricing_en = PRICING_EN
-    pricing_am = PRICING_AM
+    pricing_en = """💰 **Pricing for NFC Business Cards**
+**Price Breakdown:**
+• 1-4 cards: 1,200 ETB each
+• 5-9 cards: 1,100 ETB each
+• 10+ cards: 1,000 ETB each
+**Delivery:**
+• 200 ETB in Addis Ababa
+• Outside Ethiopia upon request (call 0960375738)
+"""
+    pricing_am = """💰 **የኤንኤፍሲ ቢዝነስ ካርዶች ዋጋ**
+**የዋጋ ዝርዝር:**
+• 1-4 ካርዶች: 1,200 ብር እያንዳንዱ
+• 5-9 ካርዶች: 1,100 ብር እያንዳንዱ
+• 10+ ካርዶች: 1,000 ብር እያንዳንዱ
+**ማስረከቢያ:**
+• በአዲስ አበባ ውስጥ 200 ብር
+• ከኢትዮጵያ ውጭ በጠይቅ ላይ (0960375738 ይደውሉ)
+"""
     button = [['🛍 Order Now / አሁን ይዘዙ', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
     await update.message.reply_text(
         f"{pricing_en}\n\n{pricing_am}",
@@ -440,7 +343,7 @@ async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return QUANTITY
 
 async def get_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if 'Back' in update.message.text or 'ይመለሱ' in update.message.text or 'Menu' in update.message.text or 'መነሻ' in update.message.text:
+    if any(kw in update.message.text for kw in ['Back', 'ይመለሱ', 'Menu', 'መነሻ']):
         return await start(update, context)
     try:
         qty = int(update.message.text.strip())
@@ -482,14 +385,38 @@ async def get_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
 async def get_agreement(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if 'Back' in update.message.text or 'ይመለሱ' in update.message.text or 'Menu' in update.message.text or 'መነሻ' in update.message.text:
+    if any(kw in update.message.text for kw in ['Back', 'ይመለሱ', 'Menu', 'መነሻ']):
         return await start(update, context)
-    if 'Cancel' in update.message.text or 'ሰርዝ' in update.message.text:
+    if any(kw in update.message.text for kw in ['Cancel', 'ሰርዝ']):
         await update.message.reply_text(get_message('order_cancelled'))
         return await start(update, context)
-    if 'Yes' in update.message.text or 'አዎ' in update.message.text or 'Continue' in update.message.text or 'ቀጥል' in update.message.text:
-        guidelines_en = DESIGN_GUIDELINES_EN
-        guidelines_am = DESIGN_GUIDELINES_AM
+    if any(kw in update.message.text for kw in ['Yes', 'አዎ', 'Continue', 'ቀጥል']):
+        guidelines_en = """📋 **Design Guidelines for NFC Business Cards**
+**Required Specifications:**
+• **Format:** PNG or JPG (transparent background preferred)
+• **Dimensions:** 3.5 × 2 inches (1050 × 600 pixels)
+• **Resolution:** 300 DPI minimum
+• **Color Mode:** CMYK for best printing results
+• **Safe Zone:** Keep critical content 0.125" from edges
+**Design Options:**
+✓ Upload your own design
+✓ Use our template
+✓ Connect with a designer (if you have an idea but haven't made it yet)
+Upload your front design now, or type 'skip' to use our template.
+"""
+        guidelines_am = """📋 **የኤንኤፍሲ ቢዝነስ ካርዶች ዲዛይን መመሪያዎች**
+**የሚፈለጉ ዝርዝሮች:**
+• **ፎርማት:** PNG ወይም JPG (ባዶ በስተጀርባ የተዘጋጀ)
+• **ልኬቶች:** 3.5 × 2 ኢንች (1050 × 600 ፒክሰል)
+• **ጥራት:** ደቂቃ 300 DPI
+• **የቀለም ሞድ:** ለመስተጋብር CMYK ይጠቀሙ
+• **ደህንነት ቦታ:** አስፈላጊ ነገሮችን ከጫፍ 0.125" አርቀው ያስቀምጡ
+**የዲዛይን አማራጮች:**
+✓ የራስዎን ዲዛይን ይጫኑ
+✓ የእኛን ቅጥ ይጠቀሙ
+✓ ከዲዛይነር ጋር ይገናኙ (ሃሳብ ካለዎት ግን ካላደረጉት)
+የፊት ለፊት ዲዛይንዎን ይጫኑ ወይም 'ዝለል' ይተይቡ እኛን ቅጥ ለመጠቀም።
+"""
         buttons = [['📤 Upload Front / ፊት ለፊት ይጫኑ', '🔗 Connect with Designer / ከዲዛይነር ጋር ይገናኙ', 'Skip / ዝለል', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
         await update.message.reply_text(
             f"{guidelines_en}\n\n{guidelines_am}",
@@ -502,7 +429,7 @@ async def get_agreement(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await start(update, context)
 
 async def get_front(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if 'Back' in update.message.text or 'ይመለሱ' in update.message.text or 'Menu' in update.message.text or 'መነሻ' in update.message.text:
+    if any(kw in update.message.text for kw in ['Back', 'ይመለሱ', 'Menu', 'መነሻ']):
         return await start(update, context)
     if update.message.text and ('designer' in update.message.text.lower() or 'ዲዛይነር' in update.message.text):
         context.user_data['front_photo'] = "NEEDS_DESIGNER"
@@ -550,7 +477,7 @@ Please contact them manually for design consultation.
         return FRONT_IMAGE
 
 async def get_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if 'Back' in update.message.text or 'ይመለሱ' in update.message.text or 'Menu' in update.message.text or 'መነሻ' in update.message.text:
+    if any(kw in update.message.text for kw in ['Back', 'ይመለሱ', 'Menu', 'መነሻ']):
         return await start(update, context)
     if update.message.text and ('no' in update.message.text.lower() or 'skip' in update.message.text.lower() or 'የለም' in update.message.text or 'ዝለል' in update.message.text):
         context.user_data['back_photo'] = "NONE"
@@ -576,7 +503,7 @@ async def get_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return BACK_IMAGE
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if 'Back' in update.message.text or 'ይመለሱ' in update.message.text or 'Menu' in update.message.text or 'መነሻ' in update.message.text:
+    if any(kw in update.message.text for kw in ['Back', 'ይመለሱ', 'Menu', 'መነሻ']):
         return await start(update, context)
     name = update.message.text.strip()
     if len(name) < 2:
@@ -594,7 +521,7 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CONTACT_INFO
 
 async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if 'Back' in update.message.text or 'ይመለሱ' in update.message.text or 'Menu' in update.message.text or 'መነሻ' in update.message.text:
+    if any(kw in update.message.text for kw in ['Back', 'ይመለሱ', 'Menu', 'መነሻ']):
         return await start(update, context)
     phone = update.message.text.strip()
     if update.message.contact:
@@ -643,12 +570,10 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return DESIGN_CONFIRM
 
 async def confirm_design(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if 'Back' in update.message.text or 'ይመለሱ' in update.message.text or 'Menu' in update.message.text or 'መነሻ' in update.message.text:
+    if any(kw in update.message.text for kw in ['Back', 'ይመለሱ', 'Menu', 'መነሻ']):
         return await start(update, context)
-    if 'Confirm' in update.message.text or 'አረጋግጥ' in update.message.text or 'Submit' in update.message.text or 'አስገባ' in update.message.text:
-        # 1. SAVE TO GOOGLE SHEETS
+    if any(kw in update.message.text for kw in ['Confirm', 'አረጋግጥ', 'Submit', 'አስገባ']):
         success = save_to_google_sheets(context.user_data)
-        # 2. NOTIFY ADMIN
         order_id = context.user_data.get('order_id', 'N/A')
         front_photo = context.user_data.get('front_photo', '')
         back_photo = context.user_data.get('back_photo', '')
@@ -711,11 +636,16 @@ async def check_status_command(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_status_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     order_id = update.message.text.strip()
     
-    # Check for back to menu
-    if 'Back' in update.message.text or 'ይመለሱ' in update.message.text or 'Menu' in update.message.text or 'መነሻ' in update.message.text:
+    if any(kw in update.message.text for kw in ['Back', 'ይመለሱ', 'Menu', 'መነሻ', '🏠']):
         return await start(update, context)
     
-    # Check status in Google Sheet
+    if not order_id.startswith("FD-"):
+        await update.message.reply_text(
+            "Invalid Order ID format. Please use the format from your confirmation (e.g., FD-250103-1430).\n\n"
+            "የትዕዛዝ መታወቂያ ቅርጸት ልክ አይደለም። ከማረጋገጫዎ ያውቃቸው ቅርጸት ይጠቀሙ (ለምሳሌ FD-250103-1430)።"
+        )
+        return await check_status_command(update, context)
+    
     order_info = check_order_status_in_sheet(order_id)
     
     if order_info:
@@ -728,11 +658,11 @@ async def handle_status_check(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 Thank you for your patience! / ለእርዳታዎ እናመሰግናለን!
         """
-        await update.message.reply_text(status_message, parse_mode='Markdown')
     else:
-        await update.message.reply_text(get_message('status_not_found', order_id=order_id))
+        status_message = get_message('status_not_found', order_id=order_id)
     
-    # Return to main menu
+    await update.message.reply_text(status_message, parse_mode='Markdown')
+    
     keyboard = [
         ['🛍 Order / ይዘዙ', '💰 Pricing / ዋጋ'],
         ['ℹ️ How it Works / እንዴት ይሰራል', '📞 Support / እርዳታ'],
@@ -767,7 +697,7 @@ async def handle_support_final(update: Update, context: ContextTypes.DEFAULT_TYP
     phone = update.message.text.strip()
     if update.message.contact:
         phone = update.message.contact.phone_number
-    if 'Back' in update.message.text or 'ይመለሱ' in update.message.text or 'Menu' in update.message.text or 'መነሻ' in update.message.text:
+    if any(kw in update.message.text for kw in ['Back', 'ይመለሱ', 'Menu', 'መነሻ']):
         return await start(update, context)
     if not validate_phone(phone):
         buttons = [['🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
@@ -807,15 +737,13 @@ def setup_application() -> Application:
     )
     app = Application.builder().token(TOKEN).build()
     app.add_error_handler(error_handler)
-    # Command handlers
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('status', check_status_command))
-    # Non-conversation handlers
     app.add_handler(MessageHandler(filters.Regex('Pricing|ዋጋ'), show_pricing))
     app.add_handler(MessageHandler(filters.Regex('Design Guidelines|የዲዛይን መመሪያዎች'), show_design_guidelines))
     app.add_handler(MessageHandler(filters.Regex('How it Works|እንዴት ይሰራል'), show_how_it_works))
     app.add_handler(MessageHandler(filters.Regex('Check Status|ሁኔታ ማየት'), check_status_command))
-    # Order conversation
+    
     order_conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex('Order|ይዘዙ|Order Now|አሁን ይዘዙ'), order_start)],
         states={
@@ -833,7 +761,7 @@ def setup_application() -> Application:
             MessageHandler(filters.Regex('Cancel|Restart|ሰርዝ|እንደገና ጀምር|Back|ይመለሱ|Menu|መነሻ'), start)
         ],
     )
-    # Support conversation
+    
     support_conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex('Support|እርዳታ'), support_start)],
         states={
@@ -846,7 +774,7 @@ def setup_application() -> Application:
             MessageHandler(filters.Regex('Cancel|Restart|ሰርዝ|እንደገና ጀምር|Back|ይመለሱ|Menu|መነሻ'), start)
         ],
     )
-    # Status check conversation
+    
     status_conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex('Check Status|ሁኔታ ማየት'), check_status_command)],
         states={
@@ -861,7 +789,6 @@ def setup_application() -> Application:
     app.add_handler(order_conv_handler)
     app.add_handler(support_conv_handler)
     app.add_handler(status_conv_handler)
-    # NO AI HANDLER
     return app
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
