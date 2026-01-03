@@ -17,13 +17,19 @@ MY_ADMIN_ID = os.getenv("ADMIN_ID")
 if not TOKEN or not MY_ADMIN_ID:
     raise ValueError("Missing required environment variables: BOT_TOKEN, ADMIN_ID")
 
-# --- EXACT BACK BUTTON TEXT (DO NOT CHANGE) ---
+# --- EXACT BUTTON TEXTS ---
 BACK_BUTTON_TEXT = "🏠 Back to Menu / ወደ መነሻ ይመለሱ"
+ORDER_BUTTON = "🛍 Order / ይዘዙ"
+PRICING_BUTTON = "💰 Pricing / ዋጋ"
+HOW_IT_WORKS_BUTTON = "ℹ️ How it Works / እንዴት ይሰራል"
+DESIGN_GUIDELINES_BUTTON = "📋 Design Guidelines / የዲዛይን መመሪያዎች"
+SUPPORT_BUTTON = "📞 Support / እርዳታ"
+CHECK_STATUS_BUTTON = "📊 Check Status / ሁኔታ ማየት"
 
 # --- STATES ---
 QUANTITY, AGREEMENT, FRONT_IMAGE, BACK_IMAGE, USER_NAME, CONTACT_INFO, DESIGN_CONFIRM = range(7)
-SUPPORT_DESC, SUPPORT_PHONE = range(8, 10)
-CHECK_STATUS_ID = 10
+SUPPORT_DESC = 7
+CHECK_STATUS_ID = 8
 
 # --- MESSAGES ---
 MESSAGES = {
@@ -120,7 +126,6 @@ Our service team will be in touch with you soon.
     }
 }
 
-# --- HELPER: SAFE BACK BUTTON DETECTION ---
 def is_back_button(text: str) -> bool:
     if not text:
         return False
@@ -128,7 +133,6 @@ def is_back_button(text: str) -> bool:
     clean_expected = " ".join(BACK_BUTTON_TEXT.split())
     return clean_input == clean_expected
 
-# --- MESSAGE GETTER ---
 def get_message(key, **kwargs):
     en_msg = MESSAGES.get(key, {}).get('en', '')
     am_msg = MESSAGES.get(key, {}).get('am', '')
@@ -137,7 +141,6 @@ def get_message(key, **kwargs):
         am_msg = am_msg.format(**kwargs)
     return f"{en_msg}\n\n{am_msg}"
 
-# --- PRICING ---
 def calculate_price(qty):
     if qty >= 10:
         return qty * 1000
@@ -145,22 +148,19 @@ def calculate_price(qty):
         return qty * 1100
     return qty * 1200
 
-# --- PHONE VALIDATION ---
 def validate_phone(phone):
     eth_pattern = r'^(09\d{8}|\+2519\d{8}|2519\d{8}|9\d{8})$'
     return bool(re.match(eth_pattern, str(phone)))
 
-# --- ORDER ID ---
 def generate_order_id():
     return f"FD-{datetime.now().strftime('%y%m%d-%H%M')}"
 
-# --- UNIVERSAL BACK HANDLER ---
 async def go_back_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     keyboard = [
-        ['🛍 Order / ይዘዙ', '💰 Pricing / ዋጋ'],
-        ['ℹ️ How it Works / እንዴት ይሰራል', '📞 Support / እርዳታ'],
-        ['📋 Design Guidelines / የዲዛይን መመሪያዎች', '📊 Check Status / ሁኔታ ማየት']
+        [ORDER_BUTTON, PRICING_BUTTON],
+        [HOW_IT_WORKS_BUTTON, SUPPORT_BUTTON],
+        [DESIGN_GUIDELINES_BUTTON, CHECK_STATUS_BUTTON]
     ]
     await update.message.reply_text(
         get_message('welcome'),
@@ -168,7 +168,6 @@ async def go_back_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     )
     return ConversationHandler.END
 
-# --- GOOGLE SHEETS (FIXED) ---
 def save_to_google_sheets(order_data):
     try:
         creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
@@ -202,7 +201,6 @@ def save_to_google_sheets(order_data):
         logging.error(f"GSHEET ERROR in save_to_google_sheets: {e}")
         return False
 
-# --- STATUS CHECK HELPER ---
 def check_order_status_in_sheet(order_id):
     try:
         creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
@@ -354,6 +352,9 @@ async def get_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
     if is_back_button(text):
         return await go_back_to_main_menu(update, context)
+    main_buttons = {ORDER_BUTTON, PRICING_BUTTON, HOW_IT_WORKS_BUTTON, SUPPORT_BUTTON, DESIGN_GUIDELINES_BUTTON, CHECK_STATUS_BUTTON}
+    if text in main_buttons:
+        return await go_back_to_main_menu(update, context)
     try:
         qty = int(text.strip())
         if qty <= 0:
@@ -391,6 +392,9 @@ async def get_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_agreement(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
     if is_back_button(text):
+        return await go_back_to_main_menu(update, context)
+    main_buttons = {ORDER_BUTTON, PRICING_BUTTON, HOW_IT_WORKS_BUTTON, SUPPORT_BUTTON, DESIGN_GUIDELINES_BUTTON, CHECK_STATUS_BUTTON}
+    if text in main_buttons:
         return await go_back_to_main_menu(update, context)
     if any(kw in text for kw in ['Cancel', 'ሰርዝ']):
         await update.message.reply_text(get_message('order_cancelled'))
@@ -436,6 +440,9 @@ Upload your front design now, or type 'skip' to use our template.
 async def get_front(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
     if is_back_button(text):
+        return await go_back_to_main_menu(update, context)
+    main_buttons = {ORDER_BUTTON, PRICING_BUTTON, HOW_IT_WORKS_BUTTON, SUPPORT_BUTTON, DESIGN_GUIDELINES_BUTTON, CHECK_STATUS_BUTTON}
+    if text in main_buttons:
         return await go_back_to_main_menu(update, context)
     if 'designer' in text.lower() or 'ዲዛይነር' in text:
         context.user_data['front_photo'] = "NEEDS_DESIGNER"
@@ -486,6 +493,9 @@ async def get_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
     if is_back_button(text):
         return await go_back_to_main_menu(update, context)
+    main_buttons = {ORDER_BUTTON, PRICING_BUTTON, HOW_IT_WORKS_BUTTON, SUPPORT_BUTTON, DESIGN_GUIDELINES_BUTTON, CHECK_STATUS_BUTTON}
+    if text in main_buttons:
+        return await go_back_to_main_menu(update, context)
     if 'no' in text.lower() or 'skip' in text.lower() or 'የለም' in text or 'ዝለል' in text:
         context.user_data['back_photo'] = "NONE"
         buttons = [[BACK_BUTTON_TEXT]]
@@ -513,6 +523,9 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     if is_back_button(text):
         return await go_back_to_main_menu(update, context)
+    main_buttons = {ORDER_BUTTON, PRICING_BUTTON, HOW_IT_WORKS_BUTTON, SUPPORT_BUTTON, DESIGN_GUIDELINES_BUTTON, CHECK_STATUS_BUTTON}
+    if text in main_buttons:
+        return await go_back_to_main_menu(update, context)
     if len(text) < 2:
         await update.message.reply_text("Please enter a valid full name (at least 2 characters, in English):\n\nእባክዎ ትክክለኛ ሙሉ ስም ያስገቡ (ቢያንስ 2 ፊደላት, በእንግሊዝኛ):")
         return USER_NAME
@@ -527,6 +540,9 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     if is_back_button(text):
+        return await go_back_to_main_menu(update, context)
+    main_buttons = {ORDER_BUTTON, PRICING_BUTTON, HOW_IT_WORKS_BUTTON, SUPPORT_BUTTON, DESIGN_GUIDELINES_BUTTON, CHECK_STATUS_BUTTON}
+    if text in main_buttons:
         return await go_back_to_main_menu(update, context)
     phone = text
     if update.message.contact:
@@ -569,6 +585,9 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def confirm_design(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
     if is_back_button(text):
+        return await go_back_to_main_menu(update, context)
+    main_buttons = {ORDER_BUTTON, PRICING_BUTTON, HOW_IT_WORKS_BUTTON, SUPPORT_BUTTON, DESIGN_GUIDELINES_BUTTON, CHECK_STATUS_BUTTON}
+    if text in main_buttons:
         return await go_back_to_main_menu(update, context)
     if any(kw in text for kw in ['Confirm', 'አረጋግጥ', 'Submit', 'አስገባ']):
         success = save_to_google_sheets(context.user_data)
@@ -656,71 +675,40 @@ async def handle_status_check(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(status_message, parse_mode='Markdown')
     return await go_back_to_main_menu(update, context)
 
-# --- SUPPORT ---
-async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- SIMPLIFIED SUPPORT HANDLERS ---
+async def support_start_simple(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_back_button(update.message.text):
         return await go_back_to_main_menu(update, context)
-    keyboard = [
-        ['Design Issue / የዲዛይን ችግር', 'Order Status / የትዕዛዝ ሁኔታ'],
-        ['Payment Question / የክፍያ ጥያቄ', 'Technical Problem / የቴክኒክ ችግር'],
-        ['Other / ሌላ', BACK_BUTTON_TEXT]
-    ]
-    message = "Select your issue type or describe it:\n\nየችግሩን አይነት ይምረጡ ወይም ይግለጹ:"
-    await update.message.reply_text(
-        message,
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    )
-    return SUPPORT_DESC
-
-async def support_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (update.message.text or "").strip()
-    if is_back_button(text):
-        return await go_back_to_main_menu(update, context)
-    context.user_data['support_type'] = text
-    message = "Please describe your problem in detail:\n\nእባክዎ ችግሩን በዝርዝር ይግለጹ:"
+    message = "Please describe your issue in detail (in English or Amharic):\n\nእባክዎ ችግሩን በዝርዝር ይግለጹ (በእንግሊዝኛ ወይም በአማርኛ):"
     buttons = [[BACK_BUTTON_TEXT]]
     await update.message.reply_text(
         message,
         reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True)
     )
-    return SUPPORT_PHONE
+    return SUPPORT_DESC
 
-async def handle_support_final(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_support_simple(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     if is_back_button(text):
         return await go_back_to_main_menu(update, context)
-    phone = text
-    if update.message.contact:
-        phone = update.message.contact.phone_number
-    if not validate_phone(phone):
-        buttons = [[BACK_BUTTON_TEXT]]
-        await update.message.reply_text(
-            get_message('invalid_phone'),
-            reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True)
-        )
-        return SUPPORT_PHONE
-    context.user_data['support_msg'] = text
+    
     admin_msg = f"""
-🆘 **SUPPORT REQUEST / የድጋፍ ጥያቄ**
-**Type / አይነት:** {context.user_data.get('support_type', 'Not specified / አልተገለጸም')}
-**Phone / ስልክ:** {phone}
-**User / ተጠቃሚ:** @{update.message.from_user.username}
-**Message / መልእክት:**
-{context.user_data.get('support_msg', 'No message / መልእክት የለም')}
-**Status / ሁኔታ:** ⏳ Needs callback / መመለስ ያስፈልገዋል
+🆘 **SUPPORT REQUEST**
+**User:** @{update.message.from_user.username or 'N/A'} (ID: {update.message.from_user.id})
+**Chat ID:** {update.effective_chat.id}
+**Message:**
+{text}
 """
     try:
         await context.bot.send_message(chat_id=MY_ADMIN_ID, text=admin_msg, parse_mode='Markdown')
         await update.message.reply_text(
-            "✅ Support request sent! We'll call you within 30 minutes.\n\n✅ የድጋፍ ጥያቄ ተልኳል! በ30 ደቂቃዎች ውስጥ እንደገና እናግኝዎታለን።",
+            "✅ Your message has been sent to our team! We’ll contact you soon.\n\n✅ መልእክትዎ ላኩል! በቅርብ ጊዜ እናግኝዎታለን።",
             reply_markup=ReplyKeyboardRemove()
         )
     except Exception as e:
-        logging.error(f"Error sending support request: {e}")
-        await update.message.reply_text(
-            "Message received. We'll contact you soon.\n\nመልእክት ተቀብሎአል። በቅርብ ጊዜ እናግኝዎታለን።",
-            reply_markup=ReplyKeyboardRemove()
-        )
+        logging.error(f"Support send error: {e}")
+        await update.message.reply_text("Message received. Thank you!")
+    
     return await go_back_to_main_menu(update, context)
 
 # --- SETUP ---
@@ -736,15 +724,14 @@ def setup_application() -> Application:
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('status', check_status_command))
     
-    # Static pages
-    app.add_handler(MessageHandler(filters.Regex('Pricing|ዋጋ'), show_pricing))
-    app.add_handler(MessageHandler(filters.Regex('Design Guidelines|የዲዛይን መመሪያዎች'), show_design_guidelines))
-    app.add_handler(MessageHandler(filters.Regex('How it Works|እንዴት ይሰራል'), show_how_it_works))
-    app.add_handler(MessageHandler(filters.Regex('Check Status|ሁኔታ ማየት'), check_status_command))
+    # Static pages — EXACT TEXT MATCHING
+    app.add_handler(MessageHandler(filters.Text([PRICING_BUTTON]), show_pricing))
+    app.add_handler(MessageHandler(filters.Text([DESIGN_GUIDELINES_BUTTON]), show_design_guidelines))
+    app.add_handler(MessageHandler(filters.Text([HOW_IT_WORKS_BUTTON]), show_how_it_works))
     
     # Conversations
     order_conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex('Order|ይዘዙ|Order Now|አሁን ይዘዙ'), order_start)],
+        entry_points=[MessageHandler(filters.Text([ORDER_BUTTON]), order_start)],
         states={
             QUANTITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_quantity)],
             AGREEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_agreement)],
@@ -756,30 +743,29 @@ def setup_application() -> Application:
         },
         fallbacks=[
             CommandHandler('start', start),
-            MessageHandler(filters.Regex(re.escape(BACK_BUTTON_TEXT)), go_back_to_main_menu),
+            MessageHandler(filters.Text([BACK_BUTTON_TEXT]), go_back_to_main_menu),
         ],
     )
     
     support_conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex('Support|እርዳታ'), support_start)],
+        entry_points=[MessageHandler(filters.Text([SUPPORT_BUTTON]), support_start_simple)],
         states={
-            SUPPORT_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, support_description)],
-            SUPPORT_PHONE: [MessageHandler(filters.CONTACT | filters.TEXT, handle_support_final)],
+            SUPPORT_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_support_simple)],
         },
         fallbacks=[
             CommandHandler('start', start),
-            MessageHandler(filters.Regex(re.escape(BACK_BUTTON_TEXT)), go_back_to_main_menu),
+            MessageHandler(filters.Text([BACK_BUTTON_TEXT]), go_back_to_main_menu),
         ],
     )
     
     status_conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex('Check Status|ሁኔታ ማየት'), check_status_command)],
+        entry_points=[MessageHandler(filters.Text([CHECK_STATUS_BUTTON]), check_status_command)],
         states={
             CHECK_STATUS_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_status_check)],
         },
         fallbacks=[
             CommandHandler('start', start),
-            MessageHandler(filters.Regex(re.escape(BACK_BUTTON_TEXT)), go_back_to_main_menu),
+            MessageHandler(filters.Text([BACK_BUTTON_TEXT]), go_back_to_main_menu),
         ],
     )
 
@@ -788,7 +774,6 @@ def setup_application() -> Application:
     app.add_handler(status_conv_handler)
     return app
 
-# --- RUN LOCALLY (optional) ---
 if __name__ == '__main__':
     app = setup_application()
     app.run_polling(allowed_updates=Update.ALL_TYPES)
