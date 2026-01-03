@@ -398,7 +398,7 @@ async def select_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         ['🛍 Order / ይዘዙ', '💰 Pricing / ዋጋ'],
         ['ℹ️ How it Works / እንዴት ይሰራል', '📞 Support / እርዳታ'],
-        ['📋 Design Guidelines / የዲዛይን መመሪያዎች']
+        ['📋 Design Guidelines / የዲዛይን መመሪያዎች', '📊 Check Status / ሁኔታ ማየት'] # Added Check Status to main menu
     ]
     welcome_text = get_message('welcome', lang)
     await update.message.reply_text(
@@ -677,7 +677,7 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.contact:
         phone = update.message.contact.phone_number
     # FIXED: Check if context.user_data is None (line 679)
-    if not context.user_data:
+    if not context.user_
         logging.error("context.user_data is None in get_contact")
         if lang == 'en':
             await update.message.reply_text("Session error. Please restart with /start")
@@ -846,20 +846,38 @@ async def confirm_design(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return USER_NAME
 
 async def check_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Ensure language is set
+    if 'language' not in context.user_data:
+        # Try to detect from text
+        text = update.message.text.lower()
+        if 'አማርኛ' in text or 'status' in text and 'ሁኔታ' in text:
+            context.user_data['language'] = 'am'
+        else:
+            context.user_data['language'] = 'en'
+    
     lang = context.user_data.get('language', 'en')
+    
     if lang == 'am':
-        message = "እባክዎ የትዕዛዝ መታወቂያዎን ያስገቡ (ለምሳሌ FD20231201123456):"
+        message = "እባክዎ የትዕዛዝ መታወቂያዎን ያስገቡ (ለምሳሌ FD-20231201123456):"
         button = [['🏠 ወደ መነሻ ይመለሱ']]
     else:
-        message = "Please enter your order ID (e.g., FD20231201123456):"
+        message = "Please enter your order ID (e.g., FD-20231201123456):"
         button = [['🏠 Back to Menu']]
-    await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(button, resize_keyboard=True))
+    
+    await update.message.reply_text(
+        message, 
+        reply_markup=ReplyKeyboardMarkup(button, resize_keyboard=True)
+    )
     return CHECK_STATUS_ID
 
 async def handle_status_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     order_id = update.message.text.strip()
     lang = context.user_data.get('language', 'en')
-
+    
+    # Check for back to menu
+    if 'Back' in update.message.text or 'ይመለሱ' in update.message.text:
+        return await start(update, context)
+    
     try:
         # 1. Get the credentials JSON string from environment variable
         creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
@@ -930,7 +948,23 @@ Thank you for your patience!
         status_message = "An error occurred while checking status. Please try again later." if lang == 'en' else "የሁኔታ ማየት ሲሞከር ስህተት ተከስቷል። እባክዎ በኋላ ይሞክሩ።"
         await update.message.reply_text(status_message)
 
-    return await start(update, context) # Return to main menu after checking status
+    # After checking status, show menu again
+    keyboard = [
+        ['🛍 Order / ይዘዙ', '💰 Pricing / ዋጋ'],
+        ['ℹ️ How it Works / እንዴት ይሰራል', '📞 Support / እርዳታ'],
+        ['📋 Design Guidelines / የዲዛይን መመሪያዎች', '📊 Check Status / ሁኔታ ማየት']
+    ]
+    
+    if lang == 'am':
+        back_message = "ወደ ዋናው ምናሌ ተመለሰ"
+    else:
+        back_message = "Returned to main menu"
+        
+    await update.message.reply_text(
+        back_message,
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    )
+    return ConversationHandler.END # End the status check conversation and return to main menu
 
 
 async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1018,6 +1052,29 @@ async def handle_support_final(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("መልእክት ተቀብሎአል። በቅርብ ጊዜ እናግኝዎታለን።", reply_markup=ReplyKeyboardRemove())
     return await start(update, context)
 
+async def return_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle return to main menu requests."""
+    text = update.message.text
+    lang = context.user_data.get('language', 'en')
+    
+    if '🏠' in text or 'Back' in text or 'ይመለሱ' in text or 'Menu' in text:
+        keyboard = [
+            ['🛍 Order / ይዘዙ', '💰 Pricing / ዋጋ'],
+            ['ℹ️ How it Works / እንዴት ይሰራል', '📞 Support / እርዳታ'],
+            ['📋 Design Guidelines / የዲዛይን መመሪያዎች', '📊 Check Status / ሁኔታ ማየት']
+        ]
+        
+        if lang == 'am':
+            message = "ወደ ዋናው ምናሌ ተመለሰ"
+        else:
+            message = "Returned to main menu"
+            
+        await update.message.reply_text(
+            message,
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+        return ConversationHandler.END
+
 # --- SETUP FUNCTION FOR WEBHOOK ---
 def setup_application() -> Application:
     logging.basicConfig(
@@ -1029,6 +1086,8 @@ def setup_application() -> Application:
     # Command handlers
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('status', check_status_command))
+    # Main menu fallback handler (ADD THIS)
+    app.add_handler(MessageHandler(filters.Regex('🏠|Back|Menu|ይመለሱ|ምናሌ'), return_to_main_menu))
     # Non-conversation handlers
     app.add_handler(MessageHandler(filters.Regex('Pricing|ዋጋ'), show_pricing))
     app.add_handler(MessageHandler(filters.Regex('Design Guidelines|የዲዛይን መመሪያዎች'), show_design_guidelines))
