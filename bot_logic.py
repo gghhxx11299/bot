@@ -630,7 +630,7 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         phone = update.message.text.strip()
     # FIXED: Check if context.user_data is None
-    if not context.user_
+    if not context.user_data:
         logging.error("context.user_data is None in get_contact")
         if lang == 'en':
             await update.message.reply_text("Session error. Please restart with /start")
