@@ -816,7 +816,7 @@ async def check_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = detect_language(update.message.text) if update.message else 'en'
     order_id = context.user_data.get('order_id')
     if not order_id:
-        if 'full_name' in context.user_  # ✅ FIXED: was context.user_
+        if 'full_name' in context.user_data:  # ✅ FIXED: was context.user_
             order_id = context.user_data.get('order_id', 'Unknown')
         else:
             if lang == 'en':
