@@ -394,6 +394,7 @@ async def select_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # If they type something else, default to English
         lang = 'en'
     context.user_data['language'] = lang
+    # Now call the logic that shows the main menu
     keyboard = [
         ['🛍 Order / ይዘዙ', '💰 Pricing / ዋጋ'],
         ['ℹ️ How it Works / እንዴት ይሰራል', '📞 Support / እርዳታ'],
@@ -404,7 +405,7 @@ async def select_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
         welcome_text,
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
-    return ConversationHandler.END
+    return ConversationHandler.END # End the language selection conversation and return to main menu
 
 async def show_how_it_works(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = context.user_data.get('language', 'en')
@@ -675,7 +676,7 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone = update.message.text.strip()
     if update.message.contact:
         phone = update.message.contact.phone_number
-    # FIXED: Check if context.user_data is None
+    # FIXED: Check if context.user_data is None (line 679)
     if not context.user_data:
         logging.error("context.user_data is None in get_contact")
         if lang == 'en':
@@ -858,14 +859,79 @@ async def check_status_command(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_status_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     order_id = update.message.text.strip()
     lang = context.user_data.get('language', 'en')
-    # This is a placeholder check. In a real implementation, you would query your Google Sheet or database.
-    # For now, just respond with a generic message if the ID starts with "FD".
-    if order_id.startswith("FD"):
-        status_message = get_message('status_found', lang, order_id=order_id)
-    else:
-        status_message = get_message('status_not_found', lang, order_id=order_id)
-    await update.message.reply_text(status_message, parse_mode='Markdown')
-    return await start(update, context)
+
+    try:
+        # 1. Get the credentials JSON string from environment variable
+        creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
+        if not creds_json_str:
+            logging.error("GSHEET ERROR: Environment variable 'GOOGLE_SHEETS_CREDENTIALS' not found.")
+            status_message = "Service temporarily unavailable. Please try again later." if lang == 'en' else "አገልግሎቱ ለጊዜው ዝግጁ አይደለም። እባክዎ በኋላ ይሞክሩ።"
+            await update.message.reply_text(status_message)
+            return await start(update, context)
+
+        # 2. Parse the JSON string into a Python dictionary
+        try:
+            creds_info = json.loads(creds_json_str)
+        except json.JSONDecodeError as e:
+            logging.error(f"GSHEET ERROR: Failed to parse credentials JSON: {e}")
+            status_message = "Service temporarily unavailable. Please try again later." if lang == 'en' else "አገልግሎቱ ለጊዜው ዝግጁ አይደለም። እባክዎ በኋላ ይሞክሩ።"
+            await update.message.reply_text(status_message)
+            return await start(update, context)
+
+        # 3. Define the required scope
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive"
+        ]
+
+        # 4. Create credentials object directly from the dictionary
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
+
+        # 5. Authorize the gspread client
+        client = gspread.authorize(creds)
+
+        # 6. Open the specific Google Sheet using its URL
+        spreadsheet_url = "https://docs.google.com/spreadsheets/d/1SqbFIXim9fVjXQJ8_7ICgBNamCTiYzbTd4DcnVvffv4/edit"
+        sheet = client.open_by_url(spreadsheet_url).sheet1 # Opens the first sheet
+
+        # 7. Find the row matching the Order_ID
+        # This assumes the Order_ID is in the 9th column (I)
+        # It searches the entire column for the ID
+        try:
+            cell = sheet.find(order_id, in_column=9) # Order_ID is in column I (index 9)
+            row_index = cell.row
+            # Get the entire row data
+            row_data = sheet.row_values(row_index)
+            # Extract relevant status information (example: Stage in column E, Paid in column J)
+            stage = row_data[4] if len(row_data) > 4 else "Unknown" # Stage is in column E (index 4)
+            paid = row_data[9] if len(row_data) > 9 else "Unknown" # Paid is in column J (index 9)
+            # Format the status message based on the data found
+            status_message = f"""
+📊 **Order Status for `{order_id}`**
+**Current Stage:** {stage}
+**Payment Status:** {paid}
+Thank you for your patience!
+            """
+            await update.message.reply_text(status_message, parse_mode='Markdown')
+
+        except gspread.exceptions.CellNotFound:
+            # If the order ID is not found in the sheet
+            status_message = get_message('status_not_found', lang, order_id=order_id)
+            await update.message.reply_text(status_message)
+
+    except gspread.exceptions.APIError as e:
+        # Handle specific Google Sheets API errors
+        logging.error(f"GSHEET API ERROR during status check: {e.response.status_code} - {e.response.json()}")
+        status_message = "Service temporarily unavailable. Please try again later." if lang == 'en' else "አገልግሎቱ ለጊዜው ዝግጁ አይደለም። እባክዎ በኋላ ይሞክሩ።"
+        await update.message.reply_text(status_message)
+    except Exception as e:
+        # Handle any other errors during status check
+        logging.error(f"Error during status check: {e}")
+        status_message = "An error occurred while checking status. Please try again later." if lang == 'en' else "የሁኔታ ማየት ሲሞከር ስህተት ተከስቷል። እባክዎ በኋላ ይሞክሩ።"
+        await update.message.reply_text(status_message)
+
+    return await start(update, context) # Return to main menu after checking status
+
 
 async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = context.user_data.get('language', 'en')
