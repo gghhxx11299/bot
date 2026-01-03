@@ -1,6 +1,6 @@
 import logging
 import os
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
     ContextTypes, ConversationHandler
@@ -11,7 +11,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import json
 
-# --- CONFIG (from environment variables) ---
+# --- CONFIG ---
 TOKEN = os.getenv("BOT_TOKEN")
 MY_ADMIN_ID = os.getenv("ADMIN_ID")
 if not TOKEN or not MY_ADMIN_ID:
@@ -22,7 +22,7 @@ QUANTITY, AGREEMENT, FRONT_IMAGE, BACK_IMAGE, USER_NAME, CONTACT_INFO, DESIGN_CO
 SUPPORT_DESC, SUPPORT_PHONE = range(8, 10)
 CHECK_STATUS_ID = 10
 
-# --- MESSAGES DICTIONARY ---
+# --- MESSAGES ---
 MESSAGES = {
     'welcome': {"en": "Welcome to FineData NFC Cards!", "am": "ወደ ፋይንዳታ ኤንኤፍሲ ካርዶች እንኳን በደህና መጡ!"},
     'order_start': {"en": "Starting new order: `{order_id}`\nHow many NFC cards would you like?", "am": "አዲስ ትዕዛዝ በመጀመር ላይ: `{order_id}`\nስንት ኤንኤፍሲ ካርዶች ይፈልጋሉ?"},
@@ -138,86 +138,10 @@ def validate_phone(phone):
     return bool(re.match(eth_pattern, str(phone)))
 
 def generate_order_id():
-    # Shorter, cleaner format: FD-YYMMDD-HHMM
     return f"FD-{datetime.now().strftime('%y%m%d-%H%M')}"
 
-# --- GOOGLE SHEETS FUNCTIONS ---
-def save_to_google_sheets(order_data):
-    """Saves a new order to the Google Sheet."""
-    try:
-        creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
-        if not creds_json_str:
-            logging.error("GSHEET ERROR: 'GOOGLE_SHEETS_CREDENTIALS' env var not found.")
-            return False
-
-        creds_info = json.loads(creds_json_str)
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
-        client = gspread.authorize(creds)
-
-        spreadsheet_url = "https://docs.google.com/spreadsheets/d/1SqbFIXim9fVjXQJ8_7ICgBNamCTiYzbTd4DcnVvffv4/edit"
-        sheet = client.open_by_url(spreadsheet_url).sheet1
-
-        new_row = [
-            order_data.get('full_name', ''),           # Name
-            order_data.get('phone', ''),               # Contact
-            order_data.get('quantity', 0),             # Qty
-            order_data.get('total_price', 0),          # money
-            "Pending",                                 # Stage
-            order_data.get('total_price', 0),          # Total
-            "Unassigned",                              # Biker
-            datetime.now().strftime('%Y-%m-%d %H:%M'), # Order Time
-            order_data.get('order_id', ''),            # Order_ID
-            "No",                                      # Paid
-            "No",                                      # Called
-            "No"                                       # Exported
-        ]
-        sheet.append_row(new_row)
-        logging.info(f"Saved order {order_data.get('order_id')} to Google Sheets.")
-        return True
-
-    except Exception as e:
-        logging.error(f"GSHEET ERROR in save_to_google_sheets: {e}")
-        return False
-
-# --- STATUS CHECK FUNCTION (CORRECTED) ---
-def check_order_status_in_sheet(order_id):
-    try:
-        # ✅ FIXED: Use os.getenv for Render environment variables (NOT st.secrets)
-        creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
-        if not creds_json_str:
-            logging.error("GSHEET ERROR: Environment variable 'GOOGLE_SHEETS_CREDENTIALS' not found.")
-            return None
-
-        # Setup credentials and client
-        creds_info = json.loads(creds_json_str)
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
-        client = gspread.authorize(creds)
-
-        # Open Google Sheet
-        spreadsheet_url = "https://docs.google.com/spreadsheets/d/1SqbFIXim9fVjXQJ8_7ICgBNamCTiYzbTd4DcnVvffv4/edit"
-        sheet = client.open_by_url(spreadsheet_url).sheet1 
-
-        # Get all records (Row 1 = keys)
-        records = sheet.get_all_records()
-
-        # Search by EXACT column name 'Order_ID'
-        for row in records:
-            if str(row.get('Order_ID', '')).strip() == str(order_id).strip():
-                return {
-                    'stage': row.get('Stage', 'Pending'),      # Exact column name
-                    'paid': row.get('Paid', 'No'),             # Exact column name
-                    'biker': row.get('Biker', 'Unassigned'),   # Exact column name
-                    'order_time': row.get('Order Time', 'Unknown') # ✅ FIXED: Key name matches handler
-                }
-        return None
-
-    except Exception as e:
-        logging.error(f"Status check failed: {e}")
-        return None
-# --- HANDLERS ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- UNIVERSAL BACK HANDLER ---
+async def go_back_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     keyboard = [
         ['🛍 Order / ይዘዙ', '💰 Pricing / ዋጋ'],
@@ -230,7 +154,74 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
+# --- GOOGLE SHEETS ---
+def save_to_google_sheets(order_data):
+    try:
+        creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
+        if not creds_json_str:
+            logging.error("GSHEET ERROR: 'GOOGLE_SHEETS_CREDENTIALS' env var not found.")
+            return False
+        creds_info = json.loads(creds_json_str)
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
+        client = gspread.authorize(creds)
+        spreadsheet_url = "https://docs.google.com/spreadsheets/d/1SqbFIXim9fVjXQJ8_7ICgBNamCTiYzbTd4DcnVvffv4/edit"
+        sheet = client.open_by_url(spreadsheet_url).sheet1
+        new_row = [
+            order_data.get('full_name', ''),
+            order_data.get('phone', ''),
+            order_data.get('quantity', 0),
+            order_data.get('total_price', 0),
+            "Pending",
+            order_data.get('total_price', 0),
+            "Unassigned",
+            datetime.now().strftime('%Y-%m-%d %H:%M'),
+            order_data.get('order_id', ''),
+            "No",
+            "No",
+            "No"
+        ]
+        sheet.append_row(new_row)
+        logging.info(f"Saved order {order_data.get('order_id')} to Google Sheets.")
+        return True
+    except Exception as e:
+        logging.error(f"GSHEET ERROR in save_to_google_sheets: {e}")
+        return False
+
+def check_order_status_in_sheet(order_id):
+    try:
+        creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
+        if not creds_json_str:
+            logging.error("GSHEET ERROR: Environment variable 'GOOGLE_SHEETS_CREDENTIALS' not found.")
+            return None
+        creds_info = json.loads(creds_json_str)
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
+        client = gspread.authorize(creds)
+        spreadsheet_url = "https://docs.google.com/spreadsheets/d/1SqbFIXim9fVjXQJ8_7ICgBNamCTiYzbTd4DcnVvffv4/edit"
+        sheet = client.open_by_url(spreadsheet_url).sheet1
+        records = sheet.get_all_records()
+        for row in records:
+            if str(row.get('Order_ID', '')).strip() == str(order_id).strip():
+                return {
+                    'stage': row.get('Stage', 'Pending'),
+                    'paid': row.get('Paid', 'No'),
+                    'biker': row.get('Biker', 'Unassigned'),
+                    'order_time': row.get('Order Time', 'Unknown')
+                }
+        return None
+    except Exception as e:
+        logging.error(f"Status check failed: {e}")
+        return None
+
+# --- MAIN MENU ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await go_back_to_main_menu(update, context)
+
+# --- STATIC PAGES ---
 async def show_how_it_works(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if "Back to Menu" in (update.message.text or "") or "ወደ መነሻ" in (update.message.text or "") or "🏠" in (update.message.text or ""):
+        return await go_back_to_main_menu(update, context)
     content_en = """ℹ️ **How It Works**
 **Step 1: Order**
 • Click "Order" and specify quantity
@@ -273,6 +264,8 @@ async def show_how_it_works(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def show_design_guidelines(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if "Back to Menu" in (update.message.text or "") or "ወደ መነሻ" in (update.message.text or "") or "🏠" in (update.message.text or ""):
+        return await go_back_to_main_menu(update, context)
     guidelines_en = """📋 **Design Guidelines for NFC Business Cards**
 **Required Specifications:**
 • **Format:** PNG or JPG (transparent background preferred)
@@ -307,6 +300,8 @@ Upload your front design now, or type 'skip' to use our template.
     )
 
 async def show_pricing(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if "Back to Menu" in (update.message.text or "") or "ወደ መነሻ" in (update.message.text or "") or "🏠" in (update.message.text or ""):
+        return await go_back_to_main_menu(update, context)
     pricing_en = """💰 **Pricing for NFC Business Cards**
 **Price Breakdown:**
 • 1-4 cards: 1,200 ETB each
@@ -332,6 +327,7 @@ async def show_pricing(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=ReplyKeyboardMarkup(button, resize_keyboard=True)
     )
 
+# --- ORDER FLOW ---
 async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     order_id = generate_order_id()
@@ -344,20 +340,17 @@ async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return QUANTITY
 
 async def get_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if any(kw in update.message.text for kw in ['Back', 'ይመለሱ', 'Menu', 'መነሻ']):
-        return await start(update, context)
+    text = (update.message.text or "").strip()
+    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+        return await go_back_to_main_menu(update, context)
     try:
-        qty = int(update.message.text.strip())
+        qty = int(text)
         if qty <= 0:
             await update.message.reply_text(get_message('invalid_number'))
             return QUANTITY
-        if qty > 100:
-            await update.message.reply_text(
-                "For bulk orders over 100, please contact support directly. How many cards?\n\n"
-                "ለ100 በላይ በጅምላ ትዕዛዞች በቀጥታ ድጋፍ ያግኙ። ስንት ካርዶች?"
-            )
-            return QUANTITY
+        is_vip = qty > 50
         context.user_data['quantity'] = qty
+        context.user_data['is_vip'] = is_vip
         context.user_data['total_price'] = calculate_price(qty)
         unit_price = calculate_price(qty) // qty
         total = context.user_data['total_price']
@@ -366,6 +359,8 @@ async def get_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
             price_info += get_message('tip_small')
         elif qty < 10:
             price_info += get_message('tip_medium')
+        if is_vip:
+            price_info += "\n\n✨ **VIP ORDER** — Priority handling for bulk request!\n\n✨ **የቫይፒ ትዕዛዝ** — ለጅምላ ጥያቄ በጣም ትኩረት ይሰጣል!"
         full_message = f"{price_info}\n{get_message('confirm_order', total=total)}"
         buttons = [['✅ Yes, Continue / አዎ, ቀጥል', '❌ Cancel / ሰርዝ', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
         await update.message.reply_text(
@@ -379,19 +374,17 @@ async def get_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return QUANTITY
     except Exception as e:
         logging.error(f"Error in get_quantity: {e}")
-        await update.message.reply_text(
-            "An error occurred. Please try again with /start\n\n"
-            "ስህተት ተከስቷል። /start በመጠቀም እንደገና ይሞክሩ"
-        )
+        await update.message.reply_text("An error occurred. Please try again with /start\n\nስህተት ተከስቷል። /start በመጠቀም እንደገና ይሞክሩ")
         return ConversationHandler.END
 
 async def get_agreement(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if any(kw in update.message.text for kw in ['Back', 'ይመለሱ', 'Menu', 'መነሻ']):
-        return await start(update, context)
-    if any(kw in update.message.text for kw in ['Cancel', 'ሰርዝ']):
+    text = update.message.text or ""
+    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+        return await go_back_to_main_menu(update, context)
+    if any(kw in text for kw in ['Cancel', 'ሰርዝ']):
         await update.message.reply_text(get_message('order_cancelled'))
-        return await start(update, context)
-    if any(kw in update.message.text for kw in ['Yes', 'አዎ', 'Continue', 'ቀጥል']):
+        return await go_back_to_main_menu(update, context)
+    if any(kw in text for kw in ['Yes', 'አዎ', 'Continue', 'ቀጥል']):
         guidelines_en = """📋 **Design Guidelines for NFC Business Cards**
 **Required Specifications:**
 • **Format:** PNG or JPG (transparent background preferred)
@@ -427,12 +420,13 @@ Upload your front design now, or type 'skip' to use our template.
         return FRONT_IMAGE
     else:
         await update.message.reply_text(get_message('order_cancelled'))
-        return await start(update, context)
+        return await go_back_to_main_menu(update, context)
 
 async def get_front(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if any(kw in update.message.text for kw in ['Back', 'ይመለሱ', 'Menu', 'መነሻ']):
-        return await start(update, context)
-    if update.message.text and ('designer' in update.message.text.lower() or 'ዲዛይነር' in update.message.text):
+    text = update.message.text or ""
+    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+        return await go_back_to_main_menu(update, context)
+    if 'designer' in text.lower() or 'ዲዛይነር' in text:
         context.user_data['front_photo'] = "NEEDS_DESIGNER"
         context.user_data['front_note'] = "Customer wants to connect with a designer"
         try:
@@ -447,12 +441,12 @@ Please contact them manually for design consultation.
 """
             await context.bot.send_message(chat_id=MY_ADMIN_ID, text=admin_msg, parse_mode='Markdown')
         except Exception as e:
-            logging.error(f"Error notifying admin about designer request: {e}")
+            logging.error(f"Error notifying admin: {e}")
         buttons = [['📤 Upload Back / ጀርባ ይጫኑ', 'NO BACK DESIGN / ጀርባ የለም', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
         message = "✅ Designer connection request received! We'll contact you soon. Now upload back design:\n\n✅ ከዲዛይነር ጋር ለመገናኘት ጥያቄዎ ተቀብሏል! በቅርብ ጊዜ እናግኝዎታለን። አሁን የጀርባ ዲዛይን ይጫኑ:"
         await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
         return BACK_IMAGE
-    if update.message.text and ('skip' in update.message.text.lower() or 'ዝለል' in update.message.text):
+    if 'skip' in text.lower() or 'ዝለል' in text:
         context.user_data['front_photo'] = "SKIP"
         context.user_data['front_note'] = "Using default template"
         buttons = [['📤 Upload Back / ጀርባ ይጫኑ', 'NO BACK DESIGN / ጀርባ የለም', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
@@ -478,9 +472,10 @@ Please contact them manually for design consultation.
         return FRONT_IMAGE
 
 async def get_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if any(kw in update.message.text for kw in ['Back', 'ይመለሱ', 'Menu', 'መነሻ']):
-        return await start(update, context)
-    if update.message.text and ('no' in update.message.text.lower() or 'skip' in update.message.text.lower() or 'የለም' in update.message.text or 'ዝለል' in update.message.text):
+    text = update.message.text or ""
+    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+        return await go_back_to_main_menu(update, context)
+    if 'no' in text.lower() or 'skip' in text.lower() or 'የለም' in text or 'ዝለል' in text:
         context.user_data['back_photo'] = "NONE"
         buttons = [['🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
         await update.message.reply_text(get_message('enter_name'), reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
@@ -504,56 +499,46 @@ async def get_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return BACK_IMAGE
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if any(kw in update.message.text for kw in ['Back', 'ይመለሱ', 'Menu', 'መነሻ']):
-        return await start(update, context)
-    name = update.message.text.strip()
-    if len(name) < 2:
-        await update.message.reply_text(
-            "Please enter a valid full name (at least 2 characters, in English):\n\n"
-            "እባክዎ ትክክለኛ ሙሉ ስም ያስገቡ (ቢያንስ 2 ፊደላት, በእንግሊዝኛ):"
-        )
+    text = (update.message.text or "").strip()
+    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+        return await go_back_to_main_menu(update, context)
+    if len(text) < 2:
+        await update.message.reply_text("Please enter a valid full name (at least 2 characters, in English):\n\nእባክዎ ትክክለኛ ሙሉ ስም ያስገቡ (ቢያንስ 2 ፊደላት, በእንግሊዝኛ):")
         return USER_NAME
-    context.user_data['full_name'] = name
+    context.user_data['full_name'] = text
     buttons = [['🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
     await update.message.reply_text(
-        get_message('name_saved', name=name),
+        get_message('name_saved', name=text),
         reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True)
     )
     return CONTACT_INFO
 
 async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if any(kw in update.message.text for kw in ['Back', 'ይመለሱ', 'Menu', 'መነሻ']):
-        return await start(update, context)
-    phone = update.message.text.strip()
+    text = (update.message.text or "").strip()
+    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+        return await go_back_to_main_menu(update, context)
+    phone = text
     if update.message.contact:
         phone = update.message.contact.phone_number
     if not validate_phone(phone):
         buttons = [['🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
-        await update.message.reply_text(
-            get_message('invalid_phone'),
-            reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True)
-        )
+        await update.message.reply_text(get_message('invalid_phone'), reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
         return CONTACT_INFO
     context.user_data['phone'] = phone
     order_id = context.user_data.get('order_id', 'N/A')
     quantity = context.user_data.get('quantity', 0)
     total_price = context.user_data.get('total_price', 0)
     front_photo = context.user_data.get('front_photo', '')
-    if front_photo == 'NEEDS_DESIGNER':
-        front_type = 'Needs designer connection / ከዲዛይነር ጋር ማገናኘት ያስፈልገዋል'
-    elif front_photo == 'SKIP':
-        front_type = 'Default template / የመደበኛ ቅጥ'
-    elif front_photo:
-        front_type = 'Custom design / ብጁ ዲዛይን'
-    else:
-        front_type = 'Not specified / አልተገለጸም'
+    front_type = (
+        'Needs designer connection / ከዲዛይነር ጋር ማገናኘት ያስፈልገዋል' if front_photo == 'NEEDS_DESIGNER' else
+        'Default template / የመደበኛ ቅጥ' if front_photo == 'SKIP' else
+        'Custom design / ብጁ ዲዛይን' if front_photo else 'Not specified / አልተገለጸም'
+    )
     back_photo = context.user_data.get('back_photo', '')
-    if back_photo == 'NONE':
-        back_type = 'None / የለም'
-    elif back_photo:
-        back_type = 'Custom design / ብጁ ዲዛይን'
-    else:
-        back_type = 'Not specified / አልተገለጸም'
+    back_type = (
+        'None / የለም' if back_photo == 'NONE' else
+        'Custom design / ብጁ ዲዛይን' if back_photo else 'Not specified / አልተገለጸም'
+    )
     summary = get_message('order_confirmation',
         order_id=order_id,
         name=context.user_data.get('full_name', 'N/A'),
@@ -571,37 +556,42 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return DESIGN_CONFIRM
 
 async def confirm_design(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if any(kw in update.message.text for kw in ['Back', 'ይመለሱ', 'Menu', 'መነሻ']):
-        return await start(update, context)
-    if any(kw in update.message.text for kw in ['Confirm', 'አረጋግጥ', 'Submit', 'አስገባ']):
+    text = update.message.text or ""
+    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+        return await go_back_to_main_menu(update, context)
+    if any(kw in text for kw in ['Confirm', 'አረጋግጥ', 'Submit', 'አስገባ']):
         success = save_to_google_sheets(context.user_data)
         order_id = context.user_data.get('order_id', 'N/A')
+        quantity = context.user_data.get('quantity', 0)
+        is_vip = context.user_data.get('is_vip', False)
         front_photo = context.user_data.get('front_photo', '')
         back_photo = context.user_data.get('back_photo', '')
-        front_status = 'Needs designer connection' if front_photo == 'NEEDS_DESIGNER' else 'Template' if front_photo == 'SKIP' else 'Custom' if front_photo else 'Not specified'
+        front_status = 'Needs designer' if front_photo == 'NEEDS_DESIGNER' else 'Template' if front_photo == 'SKIP' else 'Custom' if front_photo else 'Not specified'
         back_status = 'None' if back_photo == 'NONE' else 'Custom' if back_photo else 'Not specified'
+        vip_tag = " ✨ **VIP**" if is_vip else ""
+        vip_note = "\n**⚠️ VIP ORDER — Handle with priority!**" if is_vip else ""
         admin_summary = f"""
-🚀 **NEW ORDER RECEIVED** `{order_id}`
+🚀 **NEW ORDER RECEIVED** `{order_id}`{vip_tag}
 **Customer Info:**
 👤 Name: {context.user_data.get('full_name', 'N/A')}
 📞 Phone: {context.user_data.get('phone', 'N/A')}
 🆔 User: @{update.message.from_user.username}
 **Order Details:**
-🔢 Quantity: {context.user_data.get('quantity', 0)}
+🔢 Quantity: {quantity}
 💰 Total: {context.user_data.get('total_price', 0)} ETB
 🎨 Front: {front_status}
-🎨 Back: {back_status}
+🎨 Back: {back_status}{vip_note}
 **Note:** Handle this order manually.
 """
         try:
             await context.bot.send_message(chat_id=MY_ADMIN_ID, text=admin_summary, parse_mode='Markdown')
-            if context.user_data.get('front_photo') and context.user_data.get('front_photo') not in ['SKIP', 'NEEDS_DESIGNER']:
-                await context.bot.send_photo(chat_id=MY_ADMIN_ID, photo=context.user_data['front_photo'], caption=f"Front Design - Order {order_id}")
-            if context.user_data.get('back_photo') and context.user_data.get('back_photo') != 'NONE':
-                await context.bot.send_photo(chat_id=MY_ADMIN_ID, photo=context.user_data['back_photo'], caption=f"Back Design - Order {order_id}")
+            if front_photo and front_photo not in ['SKIP', 'NEEDS_DESIGNER']:
+                await context.bot.send_photo(chat_id=MY_ADMIN_ID, photo=front_photo, caption=f"Front Design - Order {order_id}")
+            if back_photo and back_photo != 'NONE':
+                await context.bot.send_photo(chat_id=MY_ADMIN_ID, photo=back_photo, caption=f"Back Design - Order {order_id}")
             confirmation = get_message('order_submitted',
                 order_id=order_id,
-                quantity=context.user_data.get('quantity', 0),
+                quantity=quantity,
                 total=context.user_data.get('total_price', 0))
             await update.message.reply_text(confirmation, parse_mode='Markdown', reply_markup=ReplyKeyboardRemove())
             from asyncio import sleep
@@ -619,58 +609,47 @@ async def confirm_design(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("✅ Order saved to ERP!\n\n✅ ትዕዛዝ ወደ ኤርፒ ተቀብሏል!")
         else:
             await update.message.reply_text("⚠️ Order saved to Telegram only (ERP connection failed).\n\n⚠️ ትዕዛዝ ብቻ ተቀብሏል (ኤርፒ ግንኙነት አልተሳካም).")
-        return await start(update, context)
+        return await go_back_to_main_menu(update, context)
     else:
-        buttons = [['🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
-        await update.message.reply_text(get_message('enter_name'), reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
-        return USER_NAME
+        # Edit pressed — go back to name
+        return await get_name(update, context)
 
+# --- STATUS CHECK ---
 async def check_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (update.message.text or "").strip()
+    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+        return await go_back_to_main_menu(update, context)
     message = "Please enter your order ID (e.g., FD-250103-1430):\n\nእባክዎ የትዕዛዝ መታወቂያዎን ያስገቡ (ለምሳሌ FD-250103-1430):"
     button = [['🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
-    await update.message.reply_text(
-        message, 
-        reply_markup=ReplyKeyboardMarkup(button, resize_keyboard=True)
-    )
+    await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(button, resize_keyboard=True))
     return CHECK_STATUS_ID
 
 async def handle_status_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    order_id = update.message.text.strip()
-    
-    # Handle back navigation
-    if any(kw in update.message.text for kw in ['Back', 'ይመለሱ', 'Menu', 'መነሻ', '🏠']):
-        return await start(update, context)
-    
-    # Validate Order ID format
-    if not order_id.startswith("FD-"):
-        await update.message.reply_text(
-            "Invalid Order ID format. Please use the format from your confirmation (e.g., FD-250103-1430)."
-        )
+    text = (update.message.text or "").strip()
+    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+        return await go_back_to_main_menu(update, context)
+    if not text.startswith("FD-"):
+        await update.message.reply_text("Invalid Order ID format. Please use the format from your confirmation (e.g., FD-250103-1430).")
         return await check_status_command(update, context)
-    
-    # ✅ FIXED: Now uses os.getenv and matching key names
-    order_info = check_order_status_in_sheet(order_id)
-    
+    order_info = check_order_status_in_sheet(text)
     if order_info:
-        # ✅ Uses 'order_time' which matches the key in check_order_status_in_sheet
         status_message = f"""
-📊 **Order Status for `{order_id}`**
+📊 **Order Status for `{text}`**
 **Stage:** {order_info['stage']}
 **Paid:** {order_info['paid']}
 **Biker:** {order_info['biker']}
 **Order Time:** {order_info['order_time']}
         """
     else:
-        status_message = f"Order ID `{order_id}` not found."
-    
-    # Guaranteed response to user
+        status_message = get_message('status_not_found', order_id=text)
     await update.message.reply_text(status_message, parse_mode='Markdown')
-    
-    # Return to main menu
-    await start(update, context)
-    return ConversationHandler.END
+    return await go_back_to_main_menu(update, context)
 
+# --- SUPPORT ---
 async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (update.message.text or "").strip()
+    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+        return await go_back_to_main_menu(update, context)
     keyboard = [
         ['Design Issue / የዲዛይን ችግር', 'Order Status / የትዕዛዝ ሁኔታ'],
         ['Payment Question / የክፍያ ጥያቄ', 'Technical Problem / የቴክኒክ ችግር'],
@@ -681,27 +660,27 @@ async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return SUPPORT_DESC
 
 async def support_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['support_type'] = update.message.text
+    text = (update.message.text or "").strip()
+    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+        return await go_back_to_main_menu(update, context)
+    context.user_data['support_type'] = text
     message = "Please describe your problem in detail:\n\nእባክዎ ችግሩን በዝርዝር ይግለጹ:"
     buttons = [['🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
     await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
     return SUPPORT_PHONE
 
 async def handle_support_final(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('support_msg'):
-        context.user_data['support_msg'] = update.message.text
-    phone = update.message.text.strip()
+    text = (update.message.text or "").strip()
+    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+        return await go_back_to_main_menu(update, context)
+    phone = text
     if update.message.contact:
         phone = update.message.contact.phone_number
-    if any(kw in update.message.text for kw in ['Back', 'ይመለሱ', 'Menu', 'መነሻ']):
-        return await start(update, context)
     if not validate_phone(phone):
         buttons = [['🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
-        await update.message.reply_text(
-            get_message('invalid_phone'),
-            reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True)
-        )
+        await update.message.reply_text(get_message('invalid_phone'), reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
         return SUPPORT_PHONE
+    context.user_data['support_msg'] = text
     admin_msg = f"""
 🆘 **SUPPORT REQUEST / የድጋፍ ጥያቄ**
 **Type / አይነት:** {context.user_data.get('support_type', 'Not specified / አልተገለጸም')}
@@ -723,16 +702,16 @@ async def handle_support_final(update: Update, context: ContextTypes.DEFAULT_TYP
             "Message received. We'll contact you soon.\n\nመልእክት ተቀብሎአል። በቅርብ ጊዜ እናግኝዎታለን።",
             reply_markup=ReplyKeyboardRemove()
         )
-    return await start(update, context)
+    return await go_back_to_main_menu(update, context)
 
-# --- SETUP FUNCTION FOR WEBHOOK ---
+# --- SETUP ---
 def setup_application() -> Application:
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO
     )
     app = Application.builder().token(TOKEN).build()
-    app.add_error_handler(error_handler)
+    app.add_error_handler(lambda u, c: logging.error(f"Update {u} caused error {c.error}"))
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('status', check_status_command))
     app.add_handler(MessageHandler(filters.Regex('Pricing|ዋጋ'), show_pricing))
@@ -752,9 +731,8 @@ def setup_application() -> Application:
             DESIGN_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_design)],
         },
         fallbacks=[
-            CommandHandler('cancel', start),
             CommandHandler('start', start),
-            MessageHandler(filters.Regex('Cancel|Restart|ሰርዝ|እንደገና ጀምር|Back|ይመለሱ|Menu|መነሻ'), start)
+            MessageHandler(filters.Regex(r'.*(Back to Menu|ወደ መነሻ|🏠).*'), go_back_to_main_menu),
         ],
     )
     
@@ -765,9 +743,8 @@ def setup_application() -> Application:
             SUPPORT_PHONE: [MessageHandler(filters.CONTACT | filters.TEXT, handle_support_final)],
         },
         fallbacks=[
-            CommandHandler('cancel', start),
             CommandHandler('start', start),
-            MessageHandler(filters.Regex('Cancel|Restart|ሰርዝ|እንደገና ጀምር|Back|ይመለሱ|Menu|መነሻ'), start)
+            MessageHandler(filters.Regex(r'.*(Back to Menu|ወደ መነሻ|🏠).*'), go_back_to_main_menu),
         ],
     )
     
@@ -778,7 +755,7 @@ def setup_application() -> Application:
         },
         fallbacks=[
             CommandHandler('start', start),
-            MessageHandler(filters.Regex('Back|ይመለሱ|Menu|መነሻ'), start)
+            MessageHandler(filters.Regex(r'.*(Back to Menu|ወደ መነሻ|🏠).*'), go_back_to_main_menu),
         ],
     )
 
@@ -786,14 +763,3 @@ def setup_application() -> Application:
     app.add_handler(support_conv_handler)
     app.add_handler(status_conv_handler)
     return app
-
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.error(f"Update {update} caused error {context.error}")
-    try:
-        await update.message.reply_text(
-            "Sorry, an error occurred. Please try again or use /start\n\n"
-            "ይቅርታ፣ ስህተት ተከስቷል። እባክዎ እንደገና ይሞክሩ ወይም /start ይጠቀሙ",
-            reply_markup=ReplyKeyboardMarkup([['🔄 Restart / እንደገና ጀምር', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']], resize_keyboard=True)
-        )
-    except:
-        pass
