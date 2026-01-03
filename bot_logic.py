@@ -278,7 +278,8 @@ def validate_phone(phone):
     return bool(re.match(eth_pattern, str(phone)))
 
 def generate_order_id():
-    return f"FD-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    # Shorter format: FD-YYMMDD-HHMM (e.g., FD-250103-1430)
+    return f"FD-{datetime.now().strftime('%y%m%d-%H%M')}"
 
 # --- MODIFIED GOOGLE SHEETS FUNCTION ---
 def save_to_google_sheets(order_data):
@@ -346,11 +347,10 @@ def save_to_google_sheets(order_data):
 # --- STATUS CHECK FUNCTION ---
 def check_order_status_in_sheet(order_id):
     try:
-        # 1. Access the secret directly from Streamlit's secrets (Matches your Render setup)
-        creds_json_str = st.secrets["GCP_JSON"]
-        
+        # 1. Get the credentials JSON string from environment variable (CORRECTED)
+        creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
         if not creds_json_str:
-            logging.error("GSHEET ERROR: Secret 'GCP_JSON' not found.")
+            logging.error("GSHEET ERROR: Environment variable 'GOOGLE_SHEETS_CREDENTIALS' not found.")
             return None
 
         # 2. Setup Credentials and Client
@@ -702,7 +702,7 @@ async def confirm_design(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return USER_NAME
 
 async def check_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = "Please enter your order ID (e.g., FD-20231201123456):\n\nእባክዎ የትዕዛዝ መታወቂያዎን ያስገቡ (ለምሳሌ FD-20231201123456):"
+    message = "Please enter your order ID (e.g., FD-250103-1430):\n\nእባክዎ የትዕዛዝ መታወቂያዎን ያስገቡ (ለምሳሌ FD-250103-1430):"
     button = [['🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
     await update.message.reply_text(
         message, 
