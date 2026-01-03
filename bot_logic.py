@@ -246,6 +246,24 @@ Our service team will be in touch with you soon.
     'status_not_found': {
         'en': "Order ID `{order_id}` not found. Please check the ID and try again.",
         'am': "ትዕዛዝ መታወቂያ `{order_id}` አልተገኘም። እባክዎ መታወቂያውን ያረጋግጡ እና እንደገና ይሞክሩ።"
+    },
+    'status_found': {
+        'en': """📊 **Order Status for `{order_id}`**
+**Current Status:** 🔄 Processing
+**Next Steps:**
+1. Design Confirmation
+2. Production
+3. Delivery
+Thank you for your patience!
+        """,
+        'am': """📊 **የትዕዛዝ ሁኔታ ለ `{order_id}`**
+**የአሁኑ ሁኔታ:** 🔄 በመፈተሽ ላይ
+**ቀጣይ ደረጃዎች:**
+1. የዲዛይን ማረጋገጫ
+2. ምርት
+3. ማስረከቢያ
+ለእርዳታዎ እናመሰግናለን!
+        """
     }
 }
 
@@ -320,6 +338,8 @@ def save_to_google_sheets(order_data):
 
         # 7. Prepare the new row data matching your spreadsheet columns:
         # Name	Contact	Qty	money	Stage	Total	Biker	Order Time	Order_ID	Paid	Design_confirmed	Is_connected_designer	Designer_finished
+        # Format the order time as "YYYY-MM-DD HH:MM"
+        order_time_str = datetime.now().strftime('%Y-%m-%d %H:%M')
         new_row = [
             order_data.get('full_name', ''),           # Name
             order_data.get('phone', ''),               # Contact
@@ -328,7 +348,7 @@ def save_to_google_sheets(order_data):
             "Pending",                                 # Stage
             order_data.get('total_price', 0),          # Total
             "Unassigned",                              # Biker
-            datetime.now().strftime('%Y-%m-%d %H:%M'), # Order Time
+            order_time_str,                            # Order Time (formatted)
             order_data.get('order_id', ''),            # Order_ID
             "No",                                      # Paid
             "No",                                      # Design_confirmed
@@ -656,7 +676,7 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.contact:
         phone = update.message.contact.phone_number
     # FIXED: Check if context.user_data is None
-    if not context.user_data:
+    if not context.user_
         logging.error("context.user_data is None in get_contact")
         if lang == 'en':
             await update.message.reply_text("Session error. Please restart with /start")
@@ -838,19 +858,10 @@ async def check_status_command(update: Update, context: ContextTypes.DEFAULT_TYP
 async def handle_status_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     order_id = update.message.text.strip()
     lang = context.user_data.get('language', 'en')
-    # For now, just respond with a generic message. In a real implementation,
-    # you would query your Google Sheet or database for the order status.
-    # This is a placeholder.
+    # This is a placeholder check. In a real implementation, you would query your Google Sheet or database.
+    # For now, just respond with a generic message if the ID starts with "FD".
     if order_id.startswith("FD"):
-        status_message = f"""
-📊 **Order Status for `{order_id}`**
-**Current Status:** 🔄 Processing
-**Next Steps:**
-1. Design Confirmation
-2. Production
-3. Delivery
-Thank you for your patience!
-        """
+        status_message = get_message('status_found', lang, order_id=order_id)
     else:
         status_message = get_message('status_not_found', lang, order_id=order_id)
     await update.message.reply_text(status_message, parse_mode='Markdown')
