@@ -9,7 +9,7 @@ import re
 from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import json  # Added for parsing JSON credentials
+import json  # Added for parsing JSON credentials from env
 
 # --- BILINGUAL SYSTEM PROMPT (for reference only) ---
 SYSTEM_PROMPT = """
@@ -280,7 +280,7 @@ def generate_order_id():
 def save_to_google_sheets(order_data):
     try:
         # 1. Get the credentials JSON string from environment variable
-        creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
+        creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS") # Use the name you set in your platform
         if not creds_json_str:
             logging.error("GSHEET ERROR: Environment variable 'GOOGLE_SHEETS_CREDENTIALS' not found.")
             return False
@@ -309,21 +309,22 @@ def save_to_google_sheets(order_data):
         spreadsheet_url = "https://docs.google.com/spreadsheets/d/1SqbFIXim9fVjXQJ8_7ICgBNamCTiYzbTd4DcnVvffv4/edit"
         sheet = client.open_by_url(spreadsheet_url).sheet1 # Opens the first sheet
 
-        # 7. Prepare the new row data (adjust column order based on your sheet)
+        # 7. Prepare the new row data matching your spreadsheet columns:
+        # Name	Contact	Qty	money	Stage	Total	Biker	Order Time	Order_ID	Paid	Design_confirmed	Is_connected_designer	Designer_finished
         new_row = [
-            order_data.get('full_name', ''),     # A: Name
-            order_data.get('phone', ''),         # B: Contact
-            order_data.get('quantity', 0),       # C: Qty
-            order_data.get('total_price', 0),    # D: money (Price)
-            "Pending",                           # E: Stage
-            order_data.get('total_price', 0),    # F: Total
-            "Unassigned",                        # G: Biker
-            datetime.now().strftime('%Y-%m-%d %H:%M'), # H: Order Time
-            order_data.get('order_id', ''),      # I: Order_ID
-            "No",                                # J: Paid
-            "No",                                # K: Design_confirmed
-            "Yes" if order_data.get('front_photo') == "NEEDS_DESIGNER" else "No", # L: Is_connected_designer
-            "No"                                 # M: Designer_finished
+            order_data.get('full_name', ''),           # Name
+            order_data.get('phone', ''),               # Contact
+            order_data.get('quantity', 0),             # Qty
+            order_data.get('total_price', 0),          # money
+            "Pending",                                 # Stage
+            order_data.get('total_price', 0),          # Total
+            "Unassigned",                              # Biker
+            datetime.now().strftime('%Y-%m-%d %H:%M'), # Order Time
+            order_data.get('order_id', ''),            # Order_ID
+            "No",                                      # Paid
+            "No",                                      # Design_confirmed
+            "Yes" if order_data.get('front_photo') == "NEEDS_DESIGNER" else "No", # Is_connected_designer
+            "No"                                       # Designer_finished
         ]
 
         # 8. Append the new row to the sheet
@@ -629,7 +630,7 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         phone = update.message.text.strip()
     # FIXED: Check if context.user_data is None
-    if not context.user_data:
+    if not context.user_
         logging.error("context.user_data is None in get_contact")
         if lang == 'en':
             await update.message.reply_text("Session error. Please restart with /start")
@@ -815,7 +816,7 @@ async def check_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = detect_language(update.message.text) if update.message else 'en'
     order_id = context.user_data.get('order_id')
     if not order_id:
-        if 'full_name' in context.user_data:  # ✅ FIXED: was context.user_
+        if 'full_name' in context.user_  # ✅ FIXED: was context.user_
             order_id = context.user_data.get('order_id', 'Unknown')
         else:
             if lang == 'en':
