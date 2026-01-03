@@ -1,11 +1,11 @@
 import logging
 import os
+import re
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
     ContextTypes, ConversationHandler
 )
-import re
 from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -16,6 +16,9 @@ TOKEN = os.getenv("BOT_TOKEN")
 MY_ADMIN_ID = os.getenv("ADMIN_ID")
 if not TOKEN or not MY_ADMIN_ID:
     raise ValueError("Missing required environment variables: BOT_TOKEN, ADMIN_ID")
+
+# --- EXACT BACK BUTTON TEXT (DO NOT CHANGE) ---
+BACK_BUTTON_TEXT = "🏠 Back to Menu / ወደ መነሻ ይመለሱ"
 
 # --- STATES ---
 QUANTITY, AGREEMENT, FRONT_IMAGE, BACK_IMAGE, USER_NAME, CONTACT_INFO, DESIGN_CONFIRM = range(7)
@@ -117,7 +120,16 @@ Our service team will be in touch with you soon.
     }
 }
 
-# --- HELPERS ---
+# --- HELPER: SAFE BACK BUTTON DETECTION ---
+def is_back_button(text: str) -> bool:
+    if not text:
+        return False
+    # Normalize: remove extra spaces, compare cleaned versions
+    clean_input = " ".join(text.strip().split())
+    clean_expected = " ".join(BACK_BUTTON_TEXT.split())
+    return clean_input == clean_expected
+
+# --- MESSAGE GETTER ---
 def get_message(key, **kwargs):
     en_msg = MESSAGES.get(key, {}).get('en', '')
     am_msg = MESSAGES.get(key, {}).get('am', '')
@@ -126,6 +138,7 @@ def get_message(key, **kwargs):
         am_msg = am_msg.format(**kwargs)
     return f"{en_msg}\n\n{am_msg}"
 
+# --- PRICING ---
 def calculate_price(qty):
     if qty >= 10:
         return qty * 1000
@@ -133,10 +146,12 @@ def calculate_price(qty):
         return qty * 1100
     return qty * 1200
 
+# --- PHONE VALIDATION ---
 def validate_phone(phone):
     eth_pattern = r'^(09\d{8}|\+2519\d{8}|2519\d{8}|9\d{8})$'
     return bool(re.match(eth_pattern, str(phone)))
 
+# --- ORDER ID ---
 def generate_order_id():
     return f"FD-{datetime.now().strftime('%y%m%d-%H%M')}"
 
@@ -154,7 +169,7 @@ async def go_back_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     )
     return ConversationHandler.END
 
-# --- GOOGLE SHEETS ---
+# --- GOOGLE SHEETS (NO VIP COLUMN) ---
 def save_to_google_sheets(order_data):
     try:
         creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
@@ -214,13 +229,13 @@ def check_order_status_in_sheet(order_id):
         logging.error(f"Status check failed: {e}")
         return None
 
-# --- MAIN MENU ---
+# --- MAIN MENU (/start) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await go_back_to_main_menu(update, context)
 
-# --- STATIC PAGES ---
+# --- STATIC PAGES (with back check) ---
 async def show_how_it_works(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if "Back to Menu" in (update.message.text or "") or "ወደ መነሻ" in (update.message.text or "") or "🏠" in (update.message.text or ""):
+    if is_back_button(update.message.text):
         return await go_back_to_main_menu(update, context)
     content_en = """ℹ️ **How It Works**
 **Step 1: Order**
@@ -256,7 +271,7 @@ async def show_how_it_works(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • በአዲስ አበባ ውስጥ 200 ብር ማስረከቢያ
 • ከኢትዮጵያ ውጭ በጠይቅ ላይ (0960375738 ይደውሉ)
 """
-    button = [['🛍 Order Now / አሁን ይዘዙ', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
+    button = [['🛍 Order Now / አሁን ይዘዙ', BACK_BUTTON_TEXT]]
     await update.message.reply_text(
         f"{content_en}\n\n{content_am}",
         parse_mode='Markdown',
@@ -264,7 +279,7 @@ async def show_how_it_works(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def show_design_guidelines(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if "Back to Menu" in (update.message.text or "") or "ወደ መነሻ" in (update.message.text or "") or "🏠" in (update.message.text or ""):
+    if is_back_button(update.message.text):
         return await go_back_to_main_menu(update, context)
     guidelines_en = """📋 **Design Guidelines for NFC Business Cards**
 **Required Specifications:**
@@ -292,7 +307,7 @@ Upload your front design now, or type 'skip' to use our template.
 ✓ ከዲዛይነር ጋር ይገናኙ (ሃሳብ ካለዎት ግን ካላደረጉት)
 የፊት ለፊት ዲዛይንዎን ይጫኑ ወይም 'ዝለል' ይተይቡ እኛን ቅጥ ለመጠቀም።
 """
-    button = [['🛍 Order Now / አሁን ይዘዙ', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
+    button = [['🛍 Order Now / አሁን ይዘዙ', BACK_BUTTON_TEXT]]
     await update.message.reply_text(
         f"{guidelines_en}\n\n{guidelines_am}",
         parse_mode='Markdown',
@@ -300,7 +315,7 @@ Upload your front design now, or type 'skip' to use our template.
     )
 
 async def show_pricing(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if "Back to Menu" in (update.message.text or "") or "ወደ መነሻ" in (update.message.text or "") or "🏠" in (update.message.text or ""):
+    if is_back_button(update.message.text):
         return await go_back_to_main_menu(update, context)
     pricing_en = """💰 **Pricing for NFC Business Cards**
 **Price Breakdown:**
@@ -320,7 +335,7 @@ async def show_pricing(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • በአዲስ አበባ ውስጥ 200 ብር
 • ከኢትዮጵያ ውጭ በጠይቅ ላይ (0960375738 ይደውሉ)
 """
-    button = [['🛍 Order Now / አሁን ይዘዙ', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
+    button = [['🛍 Order Now / አሁን ይዘዙ', BACK_BUTTON_TEXT]]
     await update.message.reply_text(
         f"{pricing_en}\n\n{pricing_am}",
         parse_mode='Markdown',
@@ -335,16 +350,16 @@ async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         get_message('order_start', order_id=order_id),
         parse_mode='Markdown',
-        reply_markup=ReplyKeyboardMarkup([['🏠 Back to Menu / ወደ መነሻ ይመለሱ']], resize_keyboard=True)
+        reply_markup=ReplyKeyboardMarkup([[BACK_BUTTON_TEXT]], resize_keyboard=True)
     )
     return QUANTITY
 
 async def get_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (update.message.text or "").strip()
-    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+    text = update.message.text or ""
+    if is_back_button(text):
         return await go_back_to_main_menu(update, context)
     try:
-        qty = int(text)
+        qty = int(text.strip())
         if qty <= 0:
             await update.message.reply_text(get_message('invalid_number'))
             return QUANTITY
@@ -362,7 +377,7 @@ async def get_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_vip:
             price_info += "\n\n✨ **VIP ORDER** — Priority handling for bulk request!\n\n✨ **የቫይፒ ትዕዛዝ** — ለጅምላ ጥያቄ በጣም ትኩረት ይሰጣል!"
         full_message = f"{price_info}\n{get_message('confirm_order', total=total)}"
-        buttons = [['✅ Yes, Continue / አዎ, ቀጥል', '❌ Cancel / ሰርዝ', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
+        buttons = [['✅ Yes, Continue / አዎ, ቀጥል', '❌ Cancel / ሰርዝ', BACK_BUTTON_TEXT]]
         await update.message.reply_text(
             full_message,
             parse_mode='Markdown',
@@ -379,7 +394,7 @@ async def get_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_agreement(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
-    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+    if is_back_button(text):
         return await go_back_to_main_menu(update, context)
     if any(kw in text for kw in ['Cancel', 'ሰርዝ']):
         await update.message.reply_text(get_message('order_cancelled'))
@@ -411,7 +426,7 @@ Upload your front design now, or type 'skip' to use our template.
 ✓ ከዲዛይነር ጋር ይገናኙ (ሃሳብ ካለዎት ግን ካላደረጉት)
 የፊት ለፊት ዲዛይንዎን ይጫኑ ወይም 'ዝለል' ይተይቡ እኛን ቅጥ ለመጠቀም።
 """
-        buttons = [['📤 Upload Front / ፊት ለፊት ይጫኑ', '🔗 Connect with Designer / ከዲዛይነር ጋር ይገናኙ', 'Skip / ዝለል', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
+        buttons = [['📤 Upload Front / ፊት ለፊት ይጫኑ', '🔗 Connect with Designer / ከዲዛይነር ጋር ይገናኙ', 'Skip / ዝለል', BACK_BUTTON_TEXT]]
         await update.message.reply_text(
             f"{guidelines_en}\n\n{guidelines_am}",
             parse_mode='Markdown',
@@ -424,7 +439,7 @@ Upload your front design now, or type 'skip' to use our template.
 
 async def get_front(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
-    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+    if is_back_button(text):
         return await go_back_to_main_menu(update, context)
     if 'designer' in text.lower() or 'ዲዛይነር' in text:
         context.user_data['front_photo'] = "NEEDS_DESIGNER"
@@ -442,71 +457,71 @@ Please contact them manually for design consultation.
             await context.bot.send_message(chat_id=MY_ADMIN_ID, text=admin_msg, parse_mode='Markdown')
         except Exception as e:
             logging.error(f"Error notifying admin: {e}")
-        buttons = [['📤 Upload Back / ጀርባ ይጫኑ', 'NO BACK DESIGN / ጀርባ የለም', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
+        buttons = [['📤 Upload Back / ጀርባ ይጫኑ', 'NO BACK DESIGN / ጀርባ የለም', BACK_BUTTON_TEXT]]
         message = "✅ Designer connection request received! We'll contact you soon. Now upload back design:\n\n✅ ከዲዛይነር ጋር ለመገናኘት ጥያቄዎ ተቀብሏል! በቅርብ ጊዜ እናግኝዎታለን። አሁን የጀርባ ዲዛይን ይጫኑ:"
         await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
         return BACK_IMAGE
     if 'skip' in text.lower() or 'ዝለል' in text:
         context.user_data['front_photo'] = "SKIP"
         context.user_data['front_note'] = "Using default template"
-        buttons = [['📤 Upload Back / ጀርባ ይጫኑ', 'NO BACK DESIGN / ጀርባ የለም', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
+        buttons = [['📤 Upload Back / ጀርባ ይጫኑ', 'NO BACK DESIGN / ጀርባ የለም', BACK_BUTTON_TEXT]]
         message = "Using default template. Now upload back design:\n\nየመደበኛ ቅጥ በመጠቀም ላይ። አሁን የጀርባ ዲዛይን ይጫኑ:"
         await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
         return BACK_IMAGE
     if update.message.photo:
         file_id = update.message.photo[-1].file_id
         context.user_data['front_photo'] = file_id
-        buttons = [['📤 Upload Back / ጀርባ ይጫኑ', 'NO BACK DESIGN / ጀርባ የለም', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
+        buttons = [['📤 Upload Back / ጀርባ ይጫኑ', 'NO BACK DESIGN / ጀርባ የለም', BACK_BUTTON_TEXT]]
         message = "✅ Front design accepted! Now upload back design:\n\n✅ የፊት ለፊት ዲዛይን ተቀብሎአል! አሁን የጀርባ ዲዛይን ይጫኑ:"
         await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
         return BACK_IMAGE
     elif update.message.document:
         message = "Please send the design as a photo (not a document file).\nIf you have a PDF/AI file, please contact support.\n\nእባክዎ ዲዛይንን እንደ ፎቶ ይላኩ (እንደ ፋይል ሳይሆን)።\nPDF/AI ፋይል ካለዎት እባክዎ ድጋፍ ያግኙ።"
-        buttons = [['📤 Upload Front / ፊት ለፊት ይጫኑ', '🔗 Connect with Designer / ከዲዛይነር ጋር ይገናኙ', 'Skip / ዝለል', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
+        buttons = [['📤 Upload Front / ፊት ለፊት ይጫኑ', '🔗 Connect with Designer / ከዲዛይነር ጋር ይገናኙ', 'Skip / ዝለል', BACK_BUTTON_TEXT]]
         await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
         return FRONT_IMAGE
     else:
-        buttons = [['📤 Upload Front / ፊት ለፊት ይጫኑ', '🔗 Connect with Designer / ከዲዛይነር ጋር ይገናኙ', 'Skip / ዝለል', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
+        buttons = [['📤 Upload Front / ፊት ለፊት ይጫኑ', '🔗 Connect with Designer / ከዲዛይነር ጋር ይገናኙ', 'Skip / ዝለል', BACK_BUTTON_TEXT]]
         message = "Please upload a photo of your front design, connect with a designer, or click 'Skip':\n\nእባክዎ የፊት ለፊት ዲዛይንዎን ይጫኑ፣ ከዲዛይነር ጋር ለመገናኘት ይምረጡ ወይም 'ዝለል' ይተይቡ:"
         await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
         return FRONT_IMAGE
 
 async def get_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
-    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+    if is_back_button(text):
         return await go_back_to_main_menu(update, context)
     if 'no' in text.lower() or 'skip' in text.lower() or 'የለም' in text or 'ዝለል' in text:
         context.user_data['back_photo'] = "NONE"
-        buttons = [['🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
+        buttons = [[BACK_BUTTON_TEXT]]
         await update.message.reply_text(get_message('enter_name'), reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
         return USER_NAME
     if update.message.photo:
         file_id = update.message.photo[-1].file_id
         context.user_data['back_photo'] = file_id
         await update.message.reply_text("✅ Back design accepted!\n\n✅ የጀርባ ዲዛይን ተቀብሎአል!", reply_markup=ReplyKeyboardRemove())
-        buttons = [['🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
+        buttons = [[BACK_BUTTON_TEXT]]
         await update.message.reply_text(get_message('enter_name'), reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
         return USER_NAME
     elif update.message.document:
         message = "Please send the design as a photo (not a document file).\n\nእባክዎ ዲዛይንን እንደ ፎቶ ይላኩ (እንደ ፋይል ሳይሆን)።"
-        buttons = [['📤 Upload Back / ጀርባ ይጫኑ', 'NO BACK DESIGN / ጀርባ የለም', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
+        buttons = [['📤 Upload Back / ጀርባ ይጫኑ', 'NO BACK DESIGN / ጀርባ የለም', BACK_BUTTON_TEXT]]
         await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
         return BACK_IMAGE
     else:
-        buttons = [['📤 Upload Back / ጀርባ ይጫኑ', 'NO BACK DESIGN / ጀርባ የለም', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
+        buttons = [['📤 Upload Back / ጀርባ ይጫኑ', 'NO BACK DESIGN / ጀርባ የለም', BACK_BUTTON_TEXT]]
         message = "Please upload back design or select 'No Back Design':\n\nእባክዎ የጀርባ ዲዛይን ይጫኑ ወይም 'ጀርባ የለም' ይምረጡ:"
         await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
         return BACK_IMAGE
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
-    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+    if is_back_button(text):
         return await go_back_to_main_menu(update, context)
     if len(text) < 2:
         await update.message.reply_text("Please enter a valid full name (at least 2 characters, in English):\n\nእባክዎ ትክክለኛ ሙሉ ስም ያስገቡ (ቢያንስ 2 ፊደላት, በእንግሊዝኛ):")
         return USER_NAME
     context.user_data['full_name'] = text
-    buttons = [['🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
+    buttons = [[BACK_BUTTON_TEXT]]
     await update.message.reply_text(
         get_message('name_saved', name=text),
         reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True)
@@ -515,13 +530,13 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
-    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+    if is_back_button(text):
         return await go_back_to_main_menu(update, context)
     phone = text
     if update.message.contact:
         phone = update.message.contact.phone_number
     if not validate_phone(phone):
-        buttons = [['🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
+        buttons = [[BACK_BUTTON_TEXT]]
         await update.message.reply_text(get_message('invalid_phone'), reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
         return CONTACT_INFO
     context.user_data['phone'] = phone
@@ -547,7 +562,7 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total=total_price,
         front_type=front_type,
         back_type=back_type)
-    buttons = [['✅ Confirm & Submit / አረጋግጥ & አስገባ', '✏️ Edit Information / መረጃ አርትዕ', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
+    buttons = [['✅ Confirm & Submit / አረጋግጥ & አስገባ', '✏️ Edit Information / መረጃ አርትዕ', BACK_BUTTON_TEXT]]
     await update.message.reply_text(
         summary,
         parse_mode='Markdown',
@@ -557,7 +572,7 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def confirm_design(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
-    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+    if is_back_button(text):
         return await go_back_to_main_menu(update, context)
     if any(kw in text for kw in ['Confirm', 'አረጋግጥ', 'Submit', 'አስገባ']):
         success = save_to_google_sheets(context.user_data)
@@ -611,22 +626,21 @@ async def confirm_design(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ Order saved to Telegram only (ERP connection failed).\n\n⚠️ ትዕዛዝ ብቻ ተቀብሏል (ኤርፒ ግንኙነት አልተሳካም).")
         return await go_back_to_main_menu(update, context)
     else:
-        # Edit pressed — go back to name
+        # Edit pressed
         return await get_name(update, context)
 
 # --- STATUS CHECK ---
 async def check_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (update.message.text or "").strip()
-    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+    if is_back_button(update.message.text):
         return await go_back_to_main_menu(update, context)
     message = "Please enter your order ID (e.g., FD-250103-1430):\n\nእባክዎ የትዕዛዝ መታወቂያዎን ያስገቡ (ለምሳሌ FD-250103-1430):"
-    button = [['🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
+    button = [[BACK_BUTTON_TEXT]]
     await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(button, resize_keyboard=True))
     return CHECK_STATUS_ID
 
 async def handle_status_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
-    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+    if is_back_button(text):
         return await go_back_to_main_menu(update, context)
     if not text.startswith("FD-"):
         await update.message.reply_text("Invalid Order ID format. Please use the format from your confirmation (e.g., FD-250103-1430).")
@@ -647,13 +661,12 @@ async def handle_status_check(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # --- SUPPORT ---
 async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (update.message.text or "").strip()
-    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+    if is_back_button(update.message.text):
         return await go_back_to_main_menu(update, context)
     keyboard = [
         ['Design Issue / የዲዛይን ችግር', 'Order Status / የትዕዛዝ ሁኔታ'],
         ['Payment Question / የክፍያ ጥያቄ', 'Technical Problem / የቴክኒክ ችግር'],
-        ['Other / ሌላ', '🏠 Back to Menu / ወደ መነሻ ይመለሱ']
+        ['Other / ሌላ', BACK_BUTTON_TEXT]
     ]
     message = "Select your issue type or describe it:\n\nየችግሩን አይነት ይምረጡ ወይም ይግለጹ:"
     await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
@@ -661,23 +674,23 @@ async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def support_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
-    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+    if is_back_button(text):
         return await go_back_to_main_menu(update, context)
     context.user_data['support_type'] = text
     message = "Please describe your problem in detail:\n\nእባክዎ ችግሩን በዝርዝር ይግለጹ:"
-    buttons = [['🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
+    buttons = [[BACK_BUTTON_TEXT]]
     await update.message.reply_text(message, reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
     return SUPPORT_PHONE
 
 async def handle_support_final(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
-    if "Back to Menu" in text or "ወደ መነሻ" in text or "🏠" in text:
+    if is_back_button(text):
         return await go_back_to_main_menu(update, context)
     phone = text
     if update.message.contact:
         phone = update.message.contact.phone_number
     if not validate_phone(phone):
-        buttons = [['🏠 Back to Menu / ወደ መነሻ ይመለሱ']]
+        buttons = [[BACK_BUTTON_TEXT]]
         await update.message.reply_text(get_message('invalid_phone'), reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
         return SUPPORT_PHONE
     context.user_data['support_msg'] = text
@@ -732,7 +745,7 @@ def setup_application() -> Application:
         },
         fallbacks=[
             CommandHandler('start', start),
-            MessageHandler(filters.Regex(r'.*(Back to Menu|ወደ መነሻ|🏠).*'), go_back_to_main_menu),
+            MessageHandler(filters.Regex(re.escape(BACK_BUTTON_TEXT)), go_back_to_main_menu),
         ],
     )
     
@@ -744,7 +757,7 @@ def setup_application() -> Application:
         },
         fallbacks=[
             CommandHandler('start', start),
-            MessageHandler(filters.Regex(r'.*(Back to Menu|ወደ መነሻ|🏠).*'), go_back_to_main_menu),
+            MessageHandler(filters.Regex(re.escape(BACK_BUTTON_TEXT)), go_back_to_main_menu),
         ],
     )
     
@@ -755,7 +768,7 @@ def setup_application() -> Application:
         },
         fallbacks=[
             CommandHandler('start', start),
-            MessageHandler(filters.Regex(r'.*(Back to Menu|ወደ መነሻ|🏠).*'), go_back_to_main_menu),
+            MessageHandler(filters.Regex(re.escape(BACK_BUTTON_TEXT)), go_back_to_main_menu),
         ],
     )
 
