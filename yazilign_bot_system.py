@@ -352,10 +352,8 @@ async def run_bots():
     main_app.add_handler(CommandHandler("help", help_command))
 
     # Run the single bot with proper context management
-    # Initialize the application manually to avoid context manager issues
-    await main_app.initialize()
-
-    try:
+    # Use the context manager as intended by the library
+    async with main_app:
         print("Bot is now running. Press Ctrl+C to stop.")
 
         # Check if webhook URL is provided in environment
@@ -375,14 +373,6 @@ async def run_bots():
                 drop_pending_updates=True,
                 allowed_updates=Update.ALL_TYPES
             )
-    except (KeyboardInterrupt, SystemExit):
-        print("\nBot stopped by user or system.")
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        raise
-    finally:
-        # Ensure proper shutdown
-        await main_app.shutdown()
 
 # Add a main menu function to navigate between functionalities
 async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
