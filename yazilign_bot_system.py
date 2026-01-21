@@ -415,20 +415,31 @@ def main():
         print("Error: TELEGRAM_BOT_TOKEN_MAIN environment variable not set.")
         print("Please set it with: export TELEGRAM_BOT_TOKEN_MAIN='your_bot_token_here'")
         return
-    
+
     if not os.getenv("TELEGRAM_BOT_TOKEN_REGISTRATION") or os.getenv("TELEGRAM_BOT_TOKEN_REGISTRATION") == "YOUR_DEFAULT_TOKEN":
         print("Error: TELEGRAM_BOT_TOKEN_REGISTRATION environment variable not set.")
         print("Please set it with: export TELEGRAM_BOT_TOKEN_REGISTRATION='your_bot_token_here'")
         return
-    
+
     if not os.getenv("ADMIN_CHAT_ID"):
         print("Warning: ADMIN_CHAT_ID environment variable not set.")
         print("Using default value. Please set it for production.")
-    
+
     try:
+        # Run the bot with proper event loop handling
+        import signal
+        import sys
+
+        def signal_handler(sig, frame):
+            print('\nGracefully shutting down...')
+            sys.exit(0)
+
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+
         asyncio.run(run_bots())
-    except KeyboardInterrupt:
-        print("\nYazilign Bot System stopped by user.")
+    except (KeyboardInterrupt, SystemExit):
+        print("\nYazilign Bot System stopped by user or system.")
     except Exception as e:
         print(f"\nError running Yazilign Bot System: {e}")
 
