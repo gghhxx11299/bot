@@ -352,14 +352,28 @@ async def run_bots():
     main_app.add_handler(CommandHandler("help", help_command))
 
     # Run the single bot with proper context management
+    # Use webhook instead of polling to avoid Updater internal conflicts
     try:
         async with main_app:
             print("Bot is now running. Press Ctrl+C to stop.")
-            # Use polling with proper error handling
-            await main_app.run_polling(
-                drop_pending_updates=True,
-                allowed_updates=Update.ALL_TYPES
-            )
+
+            # Check if webhook URL is provided in environment
+            webhook_url = os.getenv("WEBHOOK_URL")
+            if webhook_url:
+                # Use webhook if available
+                await main_app.run_webhook(
+                    listen="0.0.0.0",
+                    port=int(os.getenv("PORT", 8443)),
+                    url_path=os.getenv("BOT_TOKEN_MAIN"),
+                    webhook_url=f"{webhook_url}/{os.getenv('BOT_TOKEN_MAIN')}",
+                    drop_pending_updates=True
+                )
+            else:
+                # Fallback to polling if no webhook
+                await main_app.run_polling(
+                    drop_pending_updates=True,
+                    allowed_updates=Update.ALL_TYPES
+                )
     except KeyboardInterrupt:
         print("\nBot stopped by user.")
     except Exception as e:
