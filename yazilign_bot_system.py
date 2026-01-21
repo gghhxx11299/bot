@@ -308,35 +308,28 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def run_bots():
-    """Run both bots concurrently"""
-    global main_app, reg_app
-    
+    """Run the bot with both main and registration functionality"""
+    global main_app  # Use a single application
+
     print("Starting Yazilign Bot System...")
-    print("Both main bot and registration bot will start simultaneously.")
-    
-    # Initialize the applications
+    print("Single bot handling both main and registration functionality.")
+
+    # Initialize a single application using the main token
     main_app = Application.builder().token(TOKEN_MAIN).build()
-    reg_app = Application.builder().token(TOKEN_REG).build()
-    
-    # Setup main bot handlers
-    order_conv = ConversationHandler(
-        entry_points=[CommandHandler("order", order_start)],
+
+    # Main menu handler to switch between functionalities
+    MAIN_MENU = 0
+    main_menu_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start), CommandHandler("menu", lambda u, c: main_menu(u, c))],
         states={
+            MAIN_MENU: [
+                MessageHandler(filters.Regex("^(📝 Order Service|📝 Order Service / አገልግሎት ይዘዝሙ)$"), order_start),
+                MessageHandler(filters.Regex("^(📋 Register|📋 Register / ተመዝገብ)$"), begin_reg),
+                MessageHandler(filters.Regex("^(📊 Check Status|📊 Check Status / ሁኔታዬን አሳይ)$"), status_check),
+            ],
             BUREAU: [MessageHandler(filters.TEXT & ~filters.COMMAND, bureau_rec)],
-            CLIENT_LOC: [MessageHandler(filters.LOCATION, loc_rec)]
-        },
-        fallbacks=[]
-    )
-    main_app.add_handler(order_conv)
-    main_app.add_handler(MessageHandler(filters.PHOTO, payment_rec))
-    main_app.add_handler(CallbackQueryHandler(handle_accept, "^a_"))
-    main_app.add_handler(CallbackQueryHandler(admin_verify_pay, "^vp_"))
-    main_app.add_handler(CommandHandler("start", start))
-    
-    # Setup registration bot handlers
-    reg_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("Register / ተመዝገብ"), begin_reg)],
-        states={
+            CLIENT_LOC: [MessageHandler(filters.LOCATION, loc_rec)],
+            # Registration states
             LEGAL: [MessageHandler(filters.Regex("I Agree / ተስማምቻለሁ"), get_legal)],
             NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
             PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_phone)],
@@ -345,20 +338,57 @@ async def run_bots():
             SELFIE: [MessageHandler(filters.PHOTO, finish)],
         },
         fallbacks=[
-            CommandHandler("cancel", cancel), 
-            CommandHandler("start", start_reg)
+            CommandHandler("cancel", cancel),
+            CommandHandler("start", start),
+            MessageHandler(filters.Regex("^(🏠 Main Menu|🏠 Main Menu / ዋናው ዝርዝር)$"), lambda u, c: main_menu(u, c))
         ],
     )
-    
-    reg_app.add_handler(CommandHandler("start", start_reg))
-    reg_app.add_handler(MessageHandler(filters.Regex("Check Status / ሁኔታዬን አሳይ"), status_check))
-    reg_app.add_handler(reg_conv)
-    
-    # Run both bots concurrently using polling
-    await asyncio.gather(
-        main_app.run_polling(drop_pending_updates=True),
-        reg_app.run_polling(drop_pending_updates=True)
+
+    # Add all handlers to the single application
+    main_app.add_handler(main_menu_handler)
+    main_app.add_handler(MessageHandler(filters.PHOTO, payment_rec))
+    main_app.add_handler(CallbackQueryHandler(handle_accept, "^a_"))
+    main_app.add_handler(CallbackQueryHandler(admin_verify_pay, "^vp_"))
+    main_app.add_handler(CommandHandler("help", help_command))
+
+    # Run the single bot with proper context management
+    async with main_app:
+        print("Bot is now running. Press Ctrl+C to stop.")
+        try:
+            await main_app.run_polling(drop_pending_updates=True)
+        except KeyboardInterrupt:
+            print("\nBot stopped by user.")
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            raise
+
+# Add a main menu function to navigate between functionalities
+async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        ["📝 Order Service / አገልግሎት ይዘዝሙ", "📋 Register / ተመዝገብ"],
+        ["📊 Check Status / ሁኔታዬን አሳይ", "ℹ️ Help / እገዛ"]
+    ]
+    await update.message.reply_text(
+        "🏠 **Main Menu / ዋናው ዝርዝር**\n\n"
+        "Choose an option below:\n"
+        "ከታች አማራጭ ይምረጡ፡",
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+        parse_mode="Markdown"
     )
+    return 0  # MAIN_MENU state
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = (
+        "ℹ️ **Help / እገዛ**\n\n"
+        "This bot helps connect clients with workers for office tasks in Ethiopia.\n"
+        "ይህ ቦት የኢትዮጵያ ውስጥ የቢሮ ስራዎች ለመስራት ዴንበኞችን ከሰራተኞች ጋር ያገናኛል።\n\n"
+        "Commands:\n"
+        "/start - Restart the bot / ቦቱን እንደገና ያስጀምሩ\n"
+        "/menu - Return to main menu / ወደ ዋናው ዝርዝር ይመለሱ\n\n"
+        "For support, contact the admin."
+    )
+    await update.message.reply_text(help_text, parse_mode="Markdown")
+    return 0  # MAIN_MENU state
 
 def main():
     """Main function to run the combined bot system"""
