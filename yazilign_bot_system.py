@@ -352,33 +352,37 @@ async def run_bots():
     main_app.add_handler(CommandHandler("help", help_command))
 
     # Run the single bot with proper context management
-    # Use webhook instead of polling to avoid Updater internal conflicts
-    try:
-        async with main_app:
-            print("Bot is now running. Press Ctrl+C to stop.")
+    # Initialize the application manually to avoid context manager issues
+    await main_app.initialize()
 
-            # Check if webhook URL is provided in environment
-            webhook_url = os.getenv("WEBHOOK_URL")
-            if webhook_url:
-                # Use webhook if available
-                await main_app.run_webhook(
-                    listen="0.0.0.0",
-                    port=int(os.getenv("PORT", 8443)),
-                    url_path=os.getenv("BOT_TOKEN_MAIN"),
-                    webhook_url=f"{webhook_url}/{os.getenv('BOT_TOKEN_MAIN')}",
-                    drop_pending_updates=True
-                )
-            else:
-                # Fallback to polling if no webhook
-                await main_app.run_polling(
-                    drop_pending_updates=True,
-                    allowed_updates=Update.ALL_TYPES
-                )
+    try:
+        print("Bot is now running. Press Ctrl+C to stop.")
+
+        # Check if webhook URL is provided in environment
+        webhook_url = os.getenv("WEBHOOK_URL")
+        if webhook_url:
+            # Use webhook if available
+            await main_app.run_webhook(
+                listen="0.0.0.0",
+                port=int(os.getenv("PORT", 8443)),
+                url_path=os.getenv("BOT_TOKEN_MAIN"),
+                webhook_url=f"{webhook_url}/{os.getenv('BOT_TOKEN_MAIN')}",
+                drop_pending_updates=True
+            )
+        else:
+            # Fallback to polling if no webhook
+            await main_app.run_polling(
+                drop_pending_updates=True,
+                allowed_updates=Update.ALL_TYPES
+            )
     except (KeyboardInterrupt, SystemExit):
         print("\nBot stopped by user or system.")
     except Exception as e:
         print(f"An error occurred: {e}")
         raise
+    finally:
+        # Ensure proper shutdown
+        await main_app.shutdown()
 
 # Add a main menu function to navigate between functionalities
 async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
