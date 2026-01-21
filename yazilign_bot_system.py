@@ -374,8 +374,8 @@ async def run_bots():
                     drop_pending_updates=True,
                     allowed_updates=Update.ALL_TYPES
                 )
-    except KeyboardInterrupt:
-        print("\nBot stopped by user.")
+    except (KeyboardInterrupt, SystemExit):
+        print("\nBot stopped by user or system.")
     except Exception as e:
         print(f"An error occurred: {e}")
         raise
