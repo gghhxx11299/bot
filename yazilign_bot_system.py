@@ -352,15 +352,19 @@ async def run_bots():
     main_app.add_handler(CommandHandler("help", help_command))
 
     # Run the single bot with proper context management
-    async with main_app:
-        print("Bot is now running. Press Ctrl+C to stop.")
-        try:
-            await main_app.run_polling(drop_pending_updates=True)
-        except KeyboardInterrupt:
-            print("\nBot stopped by user.")
-        except Exception as e:
-            print(f"An error occurred: {e}")
-            raise
+    try:
+        async with main_app:
+            print("Bot is now running. Press Ctrl+C to stop.")
+            # Use polling with proper error handling
+            await main_app.run_polling(
+                drop_pending_updates=True,
+                allowed_updates=Update.ALL_TYPES
+            )
+    except KeyboardInterrupt:
+        print("\nBot stopped by user.")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        raise
 
 # Add a main menu function to navigate between functionalities
 async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
