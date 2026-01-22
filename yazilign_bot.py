@@ -22,6 +22,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
     filters,
+    JobQueue,
 )
 from flask import Flask, jsonify, request
 import asyncio
@@ -101,6 +102,9 @@ STATE_WORKER_UPDATE_ACCOUNT = 24
 STATE_WORKER_UPDATE_FYDA = 25
 STATE_WORKER_DASHBOARD = 26
 STATE_WORKER_LOGIN_OR_REGISTER = 27
+STATE_WORKER_AT_FRONT = 28
+STATE_CLIENT_CONFIRM_ARRIVAL = 29
+STATE_WORKER_ACTIVE_JOB = 30
 
 # ======================
 # MESSAGES
@@ -275,6 +279,39 @@ def start_commission_timer(application, order_id, worker_id, total_amount):
         )
     
     Timer(COMMISSION_TIMEOUT_HOURS * 3600, final_action).start()
+
+# ======================
+# LOCATION MONITOR (FIXES GHOSTING)
+# ======================
+
+async def check_worker_location(context: ContextTypes.DEFAULT_TYPE):
+    job = context.job
+    worker_id = job.data["worker_id"]
+    order_id = job.data["order_id"]
+    
+    try:
+        order_sheet = get_worksheet("Orders")
+        order_records = order_sheet.get_all_records()
+        order = None
+        for rec in order_records:
+            if rec.get("Order_ID") == order_id:
+                order = rec
+                break
+        
+        if not order or order.get("Status") != "Assigned":
+            job.schedule_removal()
+            return
+        
+        await context.bot.send_message(
+            chat_id=int(worker_id),
+            text="📍 Please share your current live location to confirm you're at the bureau.\n📍 እባክዎን በቢሮው ውስጥ እንደሆኑ የቀጥታ መገኛዎን ያጋሩ።",
+            reply_markup=ReplyKeyboardMarkup(
+                [[KeyboardButton("📍 Share Live Location", request_location=True)]],
+                one_time_keyboard=True
+            )
+        )
+    except Exception as e:
+        logger.error(f"Location ping error: {e}")
 
 # ======================
 # TELEGRAM HANDLERS
@@ -538,7 +575,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
         )
 
-    elif state == STATE_WORKER_ACCOUNT_HOLDER:  # 👈 FIXED TYPO HERE
+    elif state == STATE_WORKER_ACCOUNT_HOLDER:
         data["account_holder"] = text
         USER_STATE[user_id] = {"state": STATE_WORKER_FYDA_FRONT, "data": data}
         await update.message.reply_text(
@@ -679,6 +716,55 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_msg("worker_fyda_front"),
             reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
         )
+
+    # 👇 TWO-WAY HANDSHAKE FLOW
+    elif state == STATE_WORKER_AT_FRONT:
+        if text == "✅ I'm at the front of the line":
+            order_id = data["order_id"]
+            try:
+                order_sheet = get_worksheet("Orders")
+                records = order_sheet.get_all_records()
+                for rec in records:
+                    if rec.get("Order_ID") == order_id:
+                        client_id = rec.get("Client_TG_ID")
+                        await context.bot.send_message(
+                            chat_id=int(client_id),
+                            text="👷‍♂️ Your worker has reached the front of the line! Press 'Confirm Arrival' when you see them.\n👷‍♂️ ሠራተኛዎ የመስረቃ መስመር ላይ ደርሷል! ሲያዩት 'መጣ ተብሎ ያረጋግጡ' ይላኩ።",
+                            reply_markup=ReplyKeyboardMarkup(
+                                [["✅ Confirm Arrival"], ["↩️ Back to Main Menu"]],
+                                one_time_keyboard=True
+                            )
+                        )
+                        USER_STATE[int(client_id)] = {
+                            "state": STATE_CLIENT_CONFIRM_ARRIVAL,
+                            "data": {"order_id": order_id, "worker_id": user_id}
+                        }
+                        break
+            except Exception as e:
+                logger.error(f"Arrival notify error: {e}")
+
+    elif state == STATE_CLIENT_CONFIRM_ARRIVAL:
+        if text == "✅ Confirm Arrival":
+            order_id = data["order_id"]
+            worker_id = data["worker_id"]
+            
+            # Update order status
+            try:
+                sheet = get_worksheet("Orders")
+                records = sheet.get_all_records()
+                for i, rec in enumerate(records, start=2):
+                    if rec.get("Order_ID") == order_id:
+                        sheet.update_cell(i, 6, "Arrived")
+                        break
+            except Exception as e:
+                logger.error(f"Arrival update error: {e}")
+            
+            # Prompt for hours
+            await update.message.reply_text(get_msg("final_hours"))
+            USER_STATE[user_id] = {
+                "state": STATE_CLIENT_FINAL_HOURS,
+                "data": {"order_id": order_id, "worker_id": worker_id}
+            }
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -973,10 +1059,16 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Check-in update error: {e}")
 
+        # 👇 SEND ACTION BUTTONS AFTER CHECK-IN
+        keyboard = [
+            ["✅ I'm at the front of the line"],
+            ["↩️ Back to Main Menu"]
+        ]
         await update.message.reply_text(
-            get_msg("checkin_complete"),
-            reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+            "✅ Check-in complete! When you reach the front of the line, press the button below.\n✅ የመግቢያ ሂደት ተጠናቅቋል! የመስረቃ መስመር ላይ ሲደርሱ ከታች ያለውን ቁልፍ ይጫኑ።",
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
         )
+        USER_STATE[user_id] = {"state": STATE_WORKER_AT_FRONT, "data": {"order_id": order_id}}
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1038,57 +1130,83 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = data.split("_")
         order_id = parts[1]
         client_id = parts[2]
+        
+        # 🔒 ATOMIC JOB ASSIGNMENT
         try:
             sheet = get_worksheet("Orders")
             records = sheet.get_all_records()
             order = None
-            for record in records:
-                if record.get("Order_ID") == order_id and record.get("Status") == "Pending":
+            row_idx = -1
+            for i, record in enumerate(records):
+                if record.get("Order_ID") == order_id:
                     order = record
+                    row_idx = i + 2
                     break
-            if order:
-                row_idx = records.index(order) + 2
-                sheet.update_cell(row_idx, 7, str(user_id))
-                sheet.update_cell(row_idx, 6, "Assigned")
-
-                worker_sheet = get_worksheet("Workers")
-                worker_records = worker_sheet.get_all_records()
-                worker_info = None
-                for wr in worker_records:
-                    if str(wr.get("Telegram_ID")) == str(user_id):
-                        worker_info = wr
-                        break
-
-                if worker_info:
-                    contact_msg = (
-                        f"👷‍♂️ Worker found!\n"
-                        f"Name: {worker_info['Full_Name']}\n"
-                        f"Phone: {worker_info['Phone_Number']}\n"
-                        f"Telebirr: {worker_info['Telebirr_number']}\n"
-                        f"Bank: {worker_info['Bank_type']} ••••{str(worker_info['Account_number'])[-4:]}"
-                    )
-                    await context.bot.send_message(chat_id=int(client_id), text=contact_msg)
-                    await context.bot.send_message(
-                        chat_id=int(client_id),
-                        text="💳 Pay 100 ETB to their Telebirr or bank, then upload payment receipt.\n💳 ለቴሌቢር ወይም ባንክ አካውንቱ 100 ብር ይላክሱ እና ሲምበር ያስገቡ።"
-                    )
-                    
-                    if int(client_id) not in USER_STATE:
-                        USER_STATE[int(client_id)] = {"state": STATE_NONE, "data": {}}
-                    USER_STATE[int(client_id)]["state"] = STATE_CLIENT_BOOKING_RECEIPT
-                    USER_STATE[int(client_id)]["data"]["assigned_worker"] = worker_info["Worker_ID"]
-                else:
-                    await context.bot.send_message(chat_id=int(client_id), text="⚠️ Worker details not found.\n⚠️ ዝርዝሮች አልተገኙም።")
-                
-                bureau = order["Bureau_Name"]
-                USER_STATE[user_id] = {
-                    "state": STATE_WORKER_CHECKIN_PHOTO,
-                    "data": {"order_id": order_id, "bureau": bureau}
-                }
+            
+            if not order or order.get("Status") != "Pending":
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=get_msg("checkin_photo", bureau=bureau)
+                    text="⚠️ Sorry, this job was already taken by another worker.\n⚠️ ስራው ቀድሞውና ተወስቷል።"
                 )
+                return
+        except Exception as e:
+            logger.error(f"Job lock check error: {e}")
+            await context.bot.send_message(chat_id=user_id, text="⚠️ Job assignment failed. Try again.")
+            return
+        
+        # Proceed with assignment
+        try:
+            sheet.update_cell(row_idx, 7, str(user_id))
+            sheet.update_cell(row_idx, 6, "Assigned")
+
+            worker_sheet = get_worksheet("Workers")
+            worker_records = worker_sheet.get_all_records()
+            worker_info = None
+            for wr in worker_records:
+                if str(wr.get("Telegram_ID")) == str(user_id):
+                    worker_info = wr
+                    break
+
+            if worker_info:
+                contact_msg = (
+                    f"👷‍♂️ Worker found!\n"
+                    f"Name: {worker_info['Full_Name']}\n"
+                    f"Phone: {worker_info['Phone_Number']}\n"
+                    f"Telebirr: {worker_info['Telebirr_number']}\n"
+                    f"Bank: {worker_info['Bank_type']} ••••{str(worker_info['Account_number'])[-4:]}"
+                )
+                await context.bot.send_message(chat_id=int(client_id), text=contact_msg)
+                await context.bot.send_message(
+                    chat_id=int(client_id),
+                    text="💳 Pay 100 ETB to their Telebirr or bank, then upload payment receipt.\n💳 ለቴሌቢር ወይም ባንክ አካውንቱ 100 ብር ይላክሱ እና ሲምበር ያስገቡ።"
+                )
+                
+                if int(client_id) not in USER_STATE:
+                    USER_STATE[int(client_id)] = {"state": STATE_NONE, "data": {}}
+                USER_STATE[int(client_id)]["state"] = STATE_CLIENT_BOOKING_RECEIPT
+                USER_STATE[int(client_id)]["data"]["assigned_worker"] = worker_info["Worker_ID"]
+            else:
+                await context.bot.send_message(chat_id=int(client_id), text="⚠️ Worker details not found.\n⚠️ ዝርዝሮች አልተገኙም።")
+            
+            bureau = order["Bureau_Name"]
+            USER_STATE[user_id] = {
+                "state": STATE_WORKER_CHECKIN_PHOTO,
+                "data": {"order_id": order_id, "bureau": bureau}
+            }
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=get_msg("checkin_photo", bureau=bureau)
+            )
+            
+            # 👇 START LOCATION MONITOR
+            context.job_queue.run_repeating(
+                check_worker_location,
+                interval=300,  # 5 minutes
+                first=10,
+                data={"worker_id": user_id, "order_id": order_id},
+                name=f"location_monitor_{order_id}"
+            )
+            
         except Exception as e:
             logger.error(f"Accept error: {e}")
 
