@@ -32,7 +32,7 @@ import asyncio
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN_MAIN")
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID"))
-WORKER_CHANNEL_ID = int(os.getenv("WORKER_CHANNEL_ID"))
+WORKER_CHANNEL_ID = os.getenv("WORKER_CHANNEL_ID")  # e.g., "@yazilign_workers"
 SHEET_ID = os.getenv("SHEET_ID")
 
 GOOGLE_CREDS = {
@@ -60,8 +60,8 @@ HOURLY_RATE = 100
 COMMISSION_PERCENT = 0.25
 COMMISSION_TIMEOUT_HOURS = 3
 
-MAX_WARNING_DISTANCE = 100  # meters
-MAX_ALLOWED_DISTANCE = 500  # meters
+MAX_WARNING_DISTANCE = 100
+MAX_ALLOWED_DISTANCE = 500
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -94,6 +94,13 @@ STATE_WORKER_CHECKIN_LOCATION = 16
 STATE_DISPUTE_REASON = 17
 STATE_RATING = 18
 STATE_CLIENT_MONITORING = 19
+STATE_WORKER_UPDATE_MENU = 20
+STATE_WORKER_UPDATE_PHONE = 21
+STATE_WORKER_UPDATE_TELEBIRR = 22
+STATE_WORKER_UPDATE_BANK = 23
+STATE_WORKER_UPDATE_ACCOUNT = 24
+STATE_WORKER_UPDATE_FYDA = 25
+STATE_WORKER_DASHBOARD = 26
 
 # ======================
 # MESSAGES
@@ -101,7 +108,7 @@ STATE_CLIENT_MONITORING = 19
 
 MESSAGES = {
     "start": {"en": "Welcome! Are you a Client, Worker, or Admin?", "am": "እንኳን በደህና መጡ!"},
-    "cancel": {"en": "↩️ Cancel", "am": "↩️ ሰርዝ"},
+    "cancel": {"en": "↩️ Back to Main Menu", "am": "↩️ ወደ ዋና ገጽ"},
     "choose_city": {"en": "📍 Choose city:", "am": "📍 ከተማ ይምረጡ፡"},
     "city_not_active": {"en": "🚧 Not in {city} yet. Choose Addis Ababa.", "am": "🚧 በ{city} አይሰራም። አዲስ አበባ ይምረጡ።"},
     "invalid_city": {"en": "⚠️ City name must be text only (no numbers). Please re-enter.", "am": "⚠️ ከተማ ስሙ ፊደል ብቻ መሆን አለበት (ቁጥር ያልተካተተ)። እንደገና ይፃፉ።"},
@@ -332,38 +339,104 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = state_info["state"]
     data = state_info["data"]
 
-    if text == "↩️ Cancel" or text == "↩️ ሰርዝ":
+    # ✅ UNIVERSAL CANCEL BUTTON
+    if text == "↩️ Back to Main Menu" or text == "↩️ ወደ ዋና ገጽ":
         await start(update, context)
         return
 
     if text == "Client":
         USER_STATE[user_id] = {"state": STATE_CLIENT_CITY, "data": {}}
         keyboard = [[city] for city in ALL_CITIES]
+        keyboard.append(["↩️ Back to Main Menu"])
         await update.message.reply_text(
             get_msg("choose_city"),
             reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
         )
 
     elif text == "Worker":
+        # Check if existing worker
         try:
             worker_sheet = get_worksheet("Workers")
             records = worker_sheet.get_all_records()
+            worker_info = None
             for record in records:
                 if str(record.get("Telegram_ID")) == str(user_id) and record.get("Status") == "Active":
-                    await update.message.reply_text(
-                        "✅ Welcome back! You’re already registered as a worker.\n✅ እንኳን በደህና መጡ! እንደ ሠራተኛ ቀድሞውና ታዘጋለህ።"
-                    )
-                    return
+                    worker_info = record
+                    break
+            
+            if worker_info:
+                # Show dashboard
+                dashboard_text = (
+                    f"👷‍♂️ **Worker Dashboard**\n\n"
+                    f"Name: {worker_info['Full_Name']}\n"
+                    f"Total Earnings: {worker_info['Total_Earnings']} ETB\n"
+                    f"Completed Jobs: {worker_info['Total_Earnings']} jobs\n"
+                    f"Rating: {worker_info['Rating'] or 'N/A'} ⭐\n"
+                    f"Telebirr: {worker_info['Telebirr_number']}\n"
+                    f"Bank: {worker_info['Bank_type']} ••••{str(worker_info['Account_number'])[-4:]}\n\n"
+                    f"Choose an option:"
+                )
+                keyboard = [
+                    ["✅ Accept Jobs"],
+                    ["✏️ Update Profile"],
+                    ["📊 View Earnings"],
+                    ["↩️ Back to Main Menu"]
+                ]
+                await update.message.reply_text(
+                    dashboard_text,
+                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True),
+                    parse_mode="Markdown"
+                )
+                USER_STATE[user_id] = {"state": STATE_WORKER_DASHBOARD, "data": {"worker_info": worker_info}}
+                return
         except Exception as e:
             logger.error(f"Worker check error: {e}")
 
+        # New worker registration
         USER_STATE[user_id] = {"state": STATE_WORKER_NAME, "data": {}}
-        await update.message.reply_text(get_msg("worker_welcome"))
+        await update.message.reply_text(
+            get_msg("worker_welcome"),
+            reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+        )
+
+    elif state == STATE_WORKER_DASHBOARD:
+        worker_info = data["worker_info"]
+        if text == "✅ Accept Jobs":
+            await update.message.reply_text("✅ Ready for jobs! You'll receive alerts when clients post orders.\n✅ ለስራ ዝግጁ! ደንበኞች ስራ ሲለጡ ማሳወቂያ ይደርስዎታል።")
+        elif text == "✏️ Update Profile":
+            keyboard = [
+                ["📱 Phone", "💳 Telebirr"],
+                ["🏦 Bank", "🔢 Account"],
+                ["📸 Fyda Photos"],
+                ["↩️ Back to Main Menu"]
+            ]
+            await update.message.reply_text(
+                "What would you like to update?\nየትኞቹን መረጃ ማሻሽል ይፈልጋሉ?",
+                reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+            )
+            USER_STATE[user_id] = {"state": STATE_WORKER_UPDATE_PHONE, "data": worker_info}
+        elif text == "📊 View Earnings":
+            total_earnings = int(worker_info['Total_Earnings'])
+            commission_paid = int(total_earnings * 0.25)
+            net_income = total_earnings - commission_paid
+            earnings_text = (
+                f"💰 **Earnings Summary**\n\n"
+                f"Total Earned: {total_earnings} ETB\n"
+                f"Commission Paid: {commission_paid} ETB\n"
+                f"Net Income: {net_income} ETB\n"
+                f"Pending Payments: 0 ETB"
+            )
+            await update.message.reply_text(
+                earnings_text,
+                reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True),
+                parse_mode="Markdown"
+            )
 
     elif state == STATE_CLIENT_CITY:
         if re.search(r'\d', text):
-            await update.message.reply_text(get_msg("invalid_city"))
             keyboard = [[city] for city in ALL_CITIES]
+            keyboard.append(["↩️ Back to Main Menu"])
+            await update.message.reply_text(get_msg("invalid_city"))
             await update.message.reply_text(
                 get_msg("choose_city"),
                 reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
@@ -371,8 +444,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if text not in ACTIVE_CITIES:
-            await update.message.reply_text(get_msg("city_not_active", city=text))
             keyboard = [[city] for city in ALL_CITIES]
+            keyboard.append(["↩️ Back to Main Menu"])
+            await update.message.reply_text(get_msg("city_not_active", city=text))
             await update.message.reply_text(
                 get_msg("choose_city"),
                 reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
@@ -380,7 +454,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         data["city"] = text
         USER_STATE[user_id] = {"state": STATE_CLIENT_BUREAU, "data": data}
-        await update.message.reply_text(get_msg("enter_bureau"))
+        await update.message.reply_text(
+            get_msg("enter_bureau"),
+            reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+        )
 
     elif state == STATE_CLIENT_BUREAU:
         data["bureau"] = text
@@ -388,7 +465,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             get_msg("send_location"),
             reply_markup=ReplyKeyboardMarkup(
-                [[KeyboardButton("📍 Share Live Location", request_location=True)]],
+                [[KeyboardButton("📍 Share Live Location", request_location=True)], ["↩️ Back to Main Menu"]],
                 one_time_keyboard=True
             )
         )
@@ -396,17 +473,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif state == STATE_WORKER_NAME:
         data["name"] = text
         USER_STATE[user_id] = {"state": STATE_WORKER_PHONE, "data": data}
-        await update.message.reply_text(get_msg("worker_phone"))
+        await update.message.reply_text(
+            get_msg("worker_phone"),
+            reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+        )
 
     elif state == STATE_WORKER_PHONE:
         data["phone"] = text
         USER_STATE[user_id] = {"state": STATE_WORKER_TELEBIRR, "data": data}
-        await update.message.reply_text("📱 Enter your Telebirr number:\n📱 የቴሌቢር ቁጥርዎን ይፃፉ፡")
+        await update.message.reply_text(
+            "📱 Enter your Telebirr number:\n📱 የቴሌቢር ቁጥርዎን ይፃፉ፡",
+            reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+        )
 
     elif state == STATE_WORKER_TELEBIRR:
         data["telebirr"] = text
         USER_STATE[user_id] = {"state": STATE_WORKER_BANK, "data": data}
         keyboard = [[bank] for bank in BANKS]
+        keyboard.append(["↩️ Back to Main Menu"])
         await update.message.reply_text(
             "🏦 Select your bank:\n🏦 የባንክዎን ይምረጡ፡",
             reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
@@ -415,6 +499,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif state == STATE_WORKER_BANK:
         if text not in BANKS:
             keyboard = [[bank] for bank in BANKS]
+            keyboard.append(["↩️ Back to Main Menu"])
             await update.message.reply_text(
                 "⚠️ Please select from the bank list.\n⚠️ ከባንክ ዝርዝሩ ይምረጡ።",
                 reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
@@ -422,17 +507,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         data["bank_type"] = text
         USER_STATE[user_id] = {"state": STATE_WORKER_ACCOUNT_NUMBER, "data": data}
-        await update.message.reply_text("🔢 Enter your account number:\n🔢 የአካውንት ቁጥርዎን ይፃፉ፡")
+        await update.message.reply_text(
+            "🔢 Enter your account number:\n🔢 የአካውንት ቁጥርዎን ይፃፉ፡",
+            reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+        )
 
     elif state == STATE_WORKER_ACCOUNT_NUMBER:
         data["account_number"] = text
         USER_STATE[user_id] = {"state": STATE_WORKER_ACCOUNT_HOLDER, "data": data}
-        await update.message.reply_text("👤 Enter your account holder name (as on bank):\n👤 የአካውንት ባለቤት ስም (በባንክ የሚታየው)")
+        await update.message.reply_text(
+            "👤 Enter your account holder name (as on bank):\n👤 የአካውንት ባለቤት ስም (በባንክ የሚታየው)",
+            reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+        )
 
     elif state == STATE_WORKER_ACCOUNT_HOLDER:
         data["account_holder"] = text
         USER_STATE[user_id] = {"state": STATE_WORKER_FYDA_FRONT, "data": data}
-        await update.message.reply_text(get_msg("worker_fyda_front"))
+        await update.message.reply_text(
+            get_msg("worker_fyda_front"),
+            reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+        )
 
     elif state == STATE_CLIENT_FINAL_HOURS:
         try:
@@ -442,7 +536,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 total = HOURLY_RATE * hours
                 data["total"] = total
                 USER_STATE[user_id] = {"state": STATE_CLIENT_FINAL_RECEIPT, "data": data}
-                await update.message.reply_text(get_msg("final_payment", amount=total - 100))
+                await update.message.reply_text(
+                    get_msg("final_payment", amount=total - 100),
+                    reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                )
             else:
                 await update.message.reply_text(get_msg("final_hours"))
         except ValueError:
@@ -460,13 +557,116 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text(get_msg("rate_worker"))
 
+    # Handle profile updates
+    elif text == "📱 Phone":
+        USER_STATE[user_id] = {"state": STATE_WORKER_UPDATE_PHONE, "data": data}
+        await update.message.reply_text(
+            "📱 Enter new phone number:\n📱 የአዲስ ስልክ ቁጥር ይፃፉ፡",
+            reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+        )
+    elif text == "💳 Telebirr":
+        USER_STATE[user_id] = {"state": STATE_WORKER_UPDATE_TELEBIRR, "data": data}
+        await update.message.reply_text(
+            "📱 Enter new Telebirr number:\n📱 የአዲስ ቴሌቢር ቁጥር ይፃፉ፡",
+            reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+        )
+    elif text == "🏦 Bank":
+        USER_STATE[user_id] = {"state": STATE_WORKER_UPDATE_BANK, "data": data}
+        keyboard = [[bank] for bank in BANKS]
+        keyboard.append(["↩️ Back to Main Menu"])
+        await update.message.reply_text(
+            "🏦 Select new bank:\n🏦 የአዲስ ባንክ ይምረጡ፡",
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+        )
+    elif text == "🔢 Account":
+        USER_STATE[user_id] = {"state": STATE_WORKER_UPDATE_ACCOUNT, "data": data}
+        await update.message.reply_text(
+            "🔢 Enter new account number:\n🔢 የአዲስ አካውንት ቁጥር ይፃፉ፡",
+            reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+        )
+    elif text == "📸 Fyda Photos":
+        USER_STATE[user_id] = {"state": STATE_WORKER_UPDATE_FYDA, "data": data}
+        await update.message.reply_text(
+            get_msg("worker_fyda_front"),
+            reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+        )
+
+    elif state == STATE_WORKER_UPDATE_PHONE:
+        try:
+            sheet = get_worksheet("Workers")
+            records = sheet.get_all_records()
+            for i, record in enumerate(records, start=2):
+                if str(record.get("Telegram_ID")) == str(user_id):
+                    sheet.update_cell(i, 3, text)
+                    break
+            await update.message.reply_text("✅ Phone updated!\n✅ ስልክ ቁጥር ተሻሽሏል!")
+            await start(update, context)
+        except Exception as e:
+            logger.error(f"Phone update error: {e}")
+            await update.message.reply_text("⚠️ Failed to update. Try again.\n⚠️ ማሻሻል አልተሳካም።")
+
+    elif state == STATE_WORKER_UPDATE_TELEBIRR:
+        try:
+            sheet = get_worksheet("Workers")
+            records = sheet.get_all_records()
+            for i, record in enumerate(records, start=2):
+                if str(record.get("Telegram_ID")) == str(user_id):
+                    sheet.update_cell(i, 8, text)
+                    break
+            await update.message.reply_text("✅ Telebirr updated!\n✅ ቴሌቢር ተሻሽሏል!")
+            await start(update, context)
+        except Exception as e:
+            logger.error(f"Telebirr update error: {e}")
+            await update.message.reply_text("⚠️ Failed to update. Try again.\n⚠️ ማሻሻል አልተሳካም።")
+
+    elif state == STATE_WORKER_UPDATE_BANK:
+        if text not in BANKS:
+            keyboard = [[bank] for bank in BANKS]
+            keyboard.append(["↩️ Back to Main Menu"])
+            await update.message.reply_text(
+                "⚠️ Please select from the bank list.\n⚠️ ከባንክ ዝርዝሩ ይምረጡ።",
+                reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+            )
+            return
+        try:
+            sheet = get_worksheet("Workers")
+            records = sheet.get_all_records()
+            for i, record in enumerate(records, start=2):
+                if str(record.get("Telegram_ID")) == str(user_id):
+                    sheet.update_cell(i, 9, text)
+                    break
+            await update.message.reply_text("✅ Bank updated!\n✅ ባንክ ተሻሽሏል!")
+            await start(update, context)
+        except Exception as e:
+            logger.error(f"Bank update error: {e}")
+            await update.message.reply_text("⚠️ Failed to update. Try again.\n⚠️ ማሻሻል አልተሳካም።")
+
+    elif state == STATE_WORKER_UPDATE_ACCOUNT:
+        try:
+            sheet = get_worksheet("Workers")
+            records = sheet.get_all_records()
+            for i, record in enumerate(records, start=2):
+                if str(record.get("Telegram_ID")) == str(user_id):
+                    sheet.update_cell(i, 10, text)
+                    break
+            await update.message.reply_text("✅ Account updated!\n✅ አካውንት ተሻሽሏል!")
+            await start(update, context)
+        except Exception as e:
+            logger.error(f"Account update error: {e}")
+            await update.message.reply_text("⚠️ Failed to update. Try again.\n⚠️ ማሻሻል አልተሳካም።")
+
+    elif state == STATE_WORKER_UPDATE_FYDA:
+        USER_STATE[user_id] = {"state": STATE_WORKER_FYDA_FRONT, "data": {}}
+        await update.message.reply_text(
+            get_msg("worker_fyda_front"),
+            reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+        )
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
-    first_name = user.first_name or "User"
-    username = user.username
 
-    get_or_create_user(user_id, first_name, username)
+    get_or_create_user(user_id, user.first_name or "User", user.username)
 
     if is_user_banned(user_id):
         await update.message.reply_text(get_msg("user_banned"))
@@ -479,13 +679,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state == STATE_WORKER_FYDA_FRONT:
         data["fyda_front"] = update.message.photo[-1].file_id
         USER_STATE[user_id] = {"state": STATE_WORKER_FYDA_BACK, "data": data}
-        await update.message.reply_text(get_msg("worker_fyda_back"))
+        await update.message.reply_text(
+            get_msg("worker_fyda_back"),
+            reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+        )
 
     elif state == STATE_WORKER_FYDA_BACK:
         data["fyda_back"] = update.message.photo[-1].file_id
         USER_STATE[user_id]["data"] = data
 
-        # ✅ CRITICAL FIX: GET TELEGRAM ID DIRECTLY
         worker_telegram_id = str(update.effective_user.id)
         worker_id = str(uuid4())[:8]
 
@@ -495,7 +697,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 worker_id,
                 data["name"],
                 data["phone"],
-                worker_telegram_id,  # 👈 SAVED CORRECTLY
+                worker_telegram_id,
                 "0", "0", "Pending",
                 data.get("telebirr", ""),
                 data.get("bank_type", ""),
@@ -594,20 +796,24 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         start_commission_timer(context.application, data["order_id"], worker_id, total)
 
         USER_STATE[user_id] = {"state": STATE_RATING, "data": {"worker_id": worker_id}}
-        await update.message.reply_text(get_msg("rate_worker"))
+        await update.message.reply_text(
+            get_msg("rate_worker"),
+            reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+        )
 
     elif state == STATE_WORKER_CHECKIN_PHOTO:
         data["checkin_photo"] = update.message.photo[-1].file_id
         USER_STATE[user_id] = {"state": STATE_WORKER_CHECKIN_LOCATION, "data": data}
-        await update.message.reply_text(get_msg("checkin_location"))
+        await update.message.reply_text(
+            get_msg("checkin_location"),
+            reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+        )
 
 async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
-    first_name = user.first_name or "User"
-    username = user.username
 
-    get_or_create_user(user_id, first_name, username)
+    get_or_create_user(user_id, user.first_name or "User", user.username)
 
     if is_user_banned(user_id):
         await update.message.reply_text(get_msg("user_banned"))
@@ -652,6 +858,7 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✅ Order created! Searching for workers...\n✅ ትዕዛዝ ተፈጸመ! ሠራተኞች ተፈልተዋል..."
         )
 
+        # ✅ FIXED: Robust channel broadcast with fallback
         try:
             await context.bot.send_message(
                 chat_id=WORKER_CHANNEL_ID,
@@ -662,7 +869,11 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             logger.error(f"Job broadcast error: {e}")
-            await update.message.reply_text("⚠️ Failed to notify workers. Try again.\n⚠️ ሠራተኞች ማሳወቅ አልተሳካም።")
+            await context.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=f"🚨 Job broadcast failed!\nError: {str(e)}\nOrder: {order_id}"
+            )
+            await update.message.reply_text("⚠️ Workers notified manually. Admin will assign soon.\n⚠️ ሠራተኞች በእጅ ተሳይተዋል። አስተዳዳሪ በቅርቡ ይመድባል።")
 
     elif state == STATE_WORKER_CHECKIN_LOCATION:
         data["checkin_location"] = (update.message.location.latitude, update.message.location.longitude)
@@ -731,7 +942,10 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Check-in update error: {e}")
 
-        await update.message.reply_text(get_msg("checkin_complete"))
+        await update.message.reply_text(
+            get_msg("checkin_complete"),
+            reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+        )
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -900,6 +1114,13 @@ def health():
     return jsonify({"status": "ok"})
 
 # ======================
+# ERROR HANDLER
+# ======================
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error("Exception while handling an update:", exc_info=context.error)
+
+# ======================
 # MAIN
 # ======================
 
@@ -914,6 +1135,7 @@ if __name__ == "__main__":
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.LOCATION, handle_location))
     application.add_handler(CallbackQueryHandler(handle_callback))
+    application.add_error_handler(error_handler)
 
     webhook_url = os.getenv("WEBHOOK_URL")
     if webhook_url:
