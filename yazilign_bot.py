@@ -32,7 +32,6 @@ import asyncio
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN_MAIN")
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID"))
-WORKER_CHANNEL_ID = os.getenv("WORKER_CHANNEL_ID")  # e.g., "@yazilign_workers"
 SHEET_ID = os.getenv("SHEET_ID")
 
 GOOGLE_CREDS = {
@@ -101,6 +100,7 @@ STATE_WORKER_UPDATE_BANK = 23
 STATE_WORKER_UPDATE_ACCOUNT = 24
 STATE_WORKER_UPDATE_FYDA = 25
 STATE_WORKER_DASHBOARD = 26
+STATE_WORKER_LOGIN_OR_REGISTER = 27
 
 # ======================
 # MESSAGES
@@ -354,50 +354,68 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif text == "Worker":
-        # Check if existing worker
-        try:
-            worker_sheet = get_worksheet("Workers")
-            records = worker_sheet.get_all_records()
-            worker_info = None
-            for record in records:
-                if str(record.get("Telegram_ID")) == str(user_id) and record.get("Status") == "Active":
-                    worker_info = record
-                    break
-            
-            if worker_info:
-                # Show dashboard
-                dashboard_text = (
-                    f"👷‍♂️ **Worker Dashboard**\n\n"
-                    f"Name: {worker_info['Full_Name']}\n"
-                    f"Total Earnings: {worker_info['Total_Earnings']} ETB\n"
-                    f"Completed Jobs: {worker_info['Total_Earnings']} jobs\n"
-                    f"Rating: {worker_info['Rating'] or 'N/A'} ⭐\n"
-                    f"Telebirr: {worker_info['Telebirr_number']}\n"
-                    f"Bank: {worker_info['Bank_type']} ••••{str(worker_info['Account_number'])[-4:]}\n\n"
-                    f"Choose an option:"
-                )
-                keyboard = [
-                    ["✅ Accept Jobs"],
-                    ["✏️ Update Profile"],
-                    ["📊 View Earnings"],
-                    ["↩️ Back to Main Menu"]
-                ]
-                await update.message.reply_text(
-                    dashboard_text,
-                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True),
-                    parse_mode="Markdown"
-                )
-                USER_STATE[user_id] = {"state": STATE_WORKER_DASHBOARD, "data": {"worker_info": worker_info}}
-                return
-        except Exception as e:
-            logger.error(f"Worker check error: {e}")
-
-        # New worker registration
-        USER_STATE[user_id] = {"state": STATE_WORKER_NAME, "data": {}}
+        # ✅ SHOW LOGIN OR REGISTER MENU
+        keyboard = [
+            ["✅ Register as New Worker"],
+            ["🔑 Login as Existing Worker"],
+            ["↩️ Back to Main Menu"]
+        ]
         await update.message.reply_text(
-            get_msg("worker_welcome"),
-            reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+            "👷 Choose an option:\n👷 ምርጫ ይምረጡ፡",
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
         )
+        USER_STATE[user_id] = {"state": STATE_WORKER_LOGIN_OR_REGISTER, "data": {}}
+
+    elif state == STATE_WORKER_LOGIN_OR_REGISTER:
+        if text == "✅ Register as New Worker":
+            USER_STATE[user_id] = {"state": STATE_WORKER_NAME, "data": {}}
+            await update.message.reply_text(
+                get_msg("worker_welcome"),
+                reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+            )
+        elif text == "🔑 Login as Existing Worker":
+            # ✅ CHECK TELEGRAM ID IN WORKERS SHEET
+            try:
+                worker_sheet = get_worksheet("Workers")
+                records = worker_sheet.get_all_records()
+                worker_info = None
+                for record in records:
+                    if str(record.get("Telegram_ID")) == str(user_id) and record.get("Status") == "Active":
+                        worker_info = record
+                        break
+                
+                if worker_info:
+                    # ✅ TAKE TO DASHBOARD
+                    dashboard_text = (
+                        f"👷‍♂️ **Worker Dashboard**\n\n"
+                        f"Name: {worker_info['Full_Name']}\n"
+                        f"Total Earnings: {worker_info['Total_Earnings']} ETB\n"
+                        f"Completed Jobs: {worker_info['Total_Earnings']} jobs\n"
+                        f"Rating: {worker_info['Rating'] or 'N/A'} ⭐\n"
+                        f"Telebirr: {worker_info['Telebirr_number']}\n"
+                        f"Bank: {worker_info['Bank_type']} ••••{str(worker_info['Account_number'])[-4:]}\n\n"
+                        f"Choose an option:"
+                    )
+                    keyboard = [
+                        ["✅ Accept Jobs"],
+                        ["✏️ Update Profile"],
+                        ["📊 View Earnings"],
+                        ["↩️ Back to Main Menu"]
+                    ]
+                    await update.message.reply_text(
+                        dashboard_text,
+                        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True),
+                        parse_mode="Markdown"
+                    )
+                    USER_STATE[user_id] = {"state": STATE_WORKER_DASHBOARD, "data": {"worker_info": worker_info}}
+                else:
+                    await update.message.reply_text(
+                        "⚠️ No account found. Please register as a new worker.\n⚠️ ማህደር አልተገኘም። እባክዎን እንደ አዲስ ሠራተኛ ይመዝገቡ።",
+                        reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                    )
+            except Exception as e:
+                logger.error(f"Worker login error: {e}")
+                await update.message.reply_text("⚠️ Login failed. Try again.\n⚠️ መግቢያ አልተሳካም።")
 
     elif state == STATE_WORKER_DASHBOARD:
         worker_info = data["worker_info"]
@@ -855,25 +873,38 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         await update.message.reply_text(
-            "✅ Order created! Searching for workers...\n✅ ትዕዛዝ ተፈጸመ! ሠራተኞች ተፈልተዋል..."
+            "✅ Order created! Notifying workers...\n✅ ትዕዛዝ ተፈጸመ! ሠራተኞች ተሳይተዋል..."
         )
 
-        # ✅ FIXED: Robust channel broadcast with fallback
+        # ✅ SEND TO EACH WORKER DIRECTLY (NO CHANNEL)
         try:
-            await context.bot.send_message(
-                chat_id=WORKER_CHANNEL_ID,
-                text=get_msg("job_post", bureau=data["bureau"], city=data["city"], rate=HOURLY_RATE),
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("Accept", callback_data=f"accept_{order_id}_{user_id}")]
-                ])
-            )
+            worker_sheet = get_worksheet("Workers")
+            worker_records = worker_sheet.get_all_records()
+            notified_count = 0
+            
+            for worker in worker_records:
+                if worker.get("Status") == "Active":
+                    try:
+                        await context.bot.send_message(
+                            chat_id=int(worker["Telegram_ID"]),
+                            text=get_msg("job_post", bureau=data["bureau"], city=data["city"], rate=HOURLY_RATE),
+                            reply_markup=InlineKeyboardMarkup([
+                                [InlineKeyboardButton("Accept", callback_data=f"accept_{order_id}_{user_id}")]
+                            ])
+                        )
+                        notified_count += 1
+                    except Exception as e:
+                        logger.error(f"Failed to notify worker {worker['Telegram_ID']}: {e}")
+            
+            logger.info(f"Notified {notified_count} workers about order {order_id}")
+            
         except Exception as e:
-            logger.error(f"Job broadcast error: {e}")
+            logger.error(f"Worker notification error: {e}")
             await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
-                text=f"🚨 Job broadcast failed!\nError: {str(e)}\nOrder: {order_id}"
+                text=f"🚨 Failed to notify workers for order {order_id}\nError: {str(e)}"
             )
-            await update.message.reply_text("⚠️ Workers notified manually. Admin will assign soon.\n⚠️ ሠራተኞች በእጅ ተሳይተዋል። አስተዳዳሪ በቅርቡ ይመድባል።")
+            await update.message.reply_text("⚠️ Workers notified manually. Admin will assign soon.\n⚠️ ሠራተኞች በእጅ ተሳይተዋል።")
 
     elif state == STATE_WORKER_CHECKIN_LOCATION:
         data["checkin_location"] = (update.message.location.latitude, update.message.location.longitude)
