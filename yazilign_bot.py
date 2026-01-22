@@ -538,7 +538,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
         )
 
-    elif state == STATE_WORKER_ACCOUNT_HOLDER:
+    elif state == STATE_WORKER_ACCOUNT_H HOLDER:
         data["account_holder"] = text
         USER_STATE[user_id] = {"state": STATE_WORKER_FYDA_FRONT, "data": data}
         await update.message.reply_text(
@@ -1144,15 +1144,12 @@ flask_app = Flask(__name__)
 def health():
     return jsonify({"status": "ok"})
 
-# 👇 HANDLE TELEGRAM WEBHOOK
+# 👇 FIXED WEBHOOK ROUTE FOR PYTHON-TELEGRAM-BOT V20+
 @flask_app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def telegram_webhook():
     if request.method == "POST":
         update = Update.de_json(request.get_json(force=True), application.bot)
-        asyncio.run_coroutine_threadsafe(
-            application.update_queue.put(update),
-            application.updater.dispatcher.loop
-        )
+        application.update_queue.put_nowait(update)
     return "OK"
 
 # ======================
@@ -1181,7 +1178,6 @@ if __name__ == "__main__":
 
     webhook_url = os.getenv("WEBHOOK_URL")
     if webhook_url:
-        # ✅ NO url_path — Flask handles the route
         application.run_webhook(
             listen="0.0.0.0",
             port=port,
