@@ -25,16 +25,14 @@ from flask import Flask, jsonify
 import asyncio
 
 # ======================
-# CONFIGURATION FROM ENV
+# CONFIGURATION
 # ======================
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN_MAIN")
-REGISTRATION_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN_REGISTRATION")  # Optional
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID"))
 WORKER_CHANNEL_ID = int(os.getenv("WORKER_CHANNEL_ID"))
 SHEET_ID = os.getenv("SHEET_ID")
 
-# Google Service Account from individual env vars
 GOOGLE_CREDS = {
     "type": os.getenv("GOOGLE_CREDENTIALS_TYPE"),
     "project_id": os.getenv("GOOGLE_PROJECT_ID"),
@@ -58,172 +56,63 @@ HOURLY_RATE = 100
 COMMISSION_PERCENT = 0.25
 COMMISSION_TIMEOUT_HOURS = 3
 
-# Logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# User state
 USER_STATE = {}
 
 # States
 (
     STATE_NONE, STATE_CLIENT_CITY, STATE_CLIENT_BUREAU, STATE_CLIENT_LOCATION,
-    STATE_CLIENT_BOOKING_RECEIPT, STATE_CLIENT_FINAL_PAYMENT,
+    STATE_CLIENT_BOOKING_RECEIPT, STATE_CLIENT_FINAL_HOURS, STATE_CLIENT_FINAL_RECEIPT,
     STATE_WORKER_NAME, STATE_WORKER_PHONE, STATE_WORKER_FYDA,
-    STATE_DISPUTE_REASON
-) = range(10)
+    STATE_DISPUTE_REASON, STATE_RATING
+) = range(12)
 
 # ======================
-# BILINGUAL MESSAGES
+# MESSAGES
 # ======================
 
 MESSAGES = {
-    "start": {
-        "en": "Welcome! Are you a Client, Worker, or Admin?",
-        "am": "እንኳን በደህና መጡ! ከላይ ያሉት የስራ ሰራተኛ ወይስ አድሚን ነዎት?"
-    },
-    "cancel": {
-        "en": "↩️ Cancel",
-        "am": "↩️ ሰርዝ"
-    },
-    "choose_city": {
-        "en": "📍 Choose city:",
-        "am": "📍 ከተማ ይምረጡ፡"
-    },
-    "city_not_active": {
-        "en": "🚧 We’re not operating in {city} yet! Please choose Addis Ababa.",
-        "am": "🚧 እስካሁን በ{city} አገልግሎት አልጀመርንም! እባክዎን አዲስ አበባን ይምረጡ።"
-    },
-    "enter_bureau": {
-        "en": "📍 Type the bureau name (e.g., CMC Passport Office):",
-        "am": "📍 የቢሮውን ስም ይጥቀሱ (ለምሳሌ፦ ሲኤምሲ ፓስፖርት ቢሮ)፡"
-    },
-    "send_location": {
-        "en": "📍 Please share your live location for meetup:",
-        "am": "📍 ለመገናኘት እንዲያመች የቀጥታ መገኛዎን ይላኩ፡"
-    },
-    "booking_fee": {
-        "en": "To confirm, please pay 100 ETB to [CBE Account] and upload the receipt.",
-        "am": "ለማረጋገጥ፣ እባክዎን 100 ብር ወደ [CBE Account] ገቢ አድርገው ደረሰኙን ይላኩ።"
-    },
-    "worker_welcome": {
-        "en": "👷 Welcome! Please send your full name:",
-        "am": "👷 እንኳን ደህና መጡ! እባክዎን ሙሉ ስምዎን ይላኩ፡"
-    },
-    "worker_phone": {
-        "en": "📱 Please send your phone number:",
-        "am": "📱 እባክዎን ስልክ ቁጥርዎን ይላኩ፡"
-    },
-    "worker_fyda": {
-        "en": "📸 Please send FRONT and BACK photos of your Fyda (ID):",
-        "am": "📸 እባክዎን የፋይዳ (መታወቂያ) ፊት እና ጀርባ ፎቶ ይላኩ፡"
-    },
-    "admin_approve_worker": {
-        "en": "🆕 New worker registration!\nName: {name}\nPhone: {phone}\nApprove?",
-        "am": "🆕 አዲስ የሰራተኛ ምዝገባ!\nስም፡ {name}\nስልክ፡ {phone}\nይፅደቅ?"
-    },
-    "worker_approved": {
-        "en": "✅ Approved! You’ll receive job alerts soon.",
-        "am": "✅ ፀድቋል! በቅርቡ የስራ ማስታወቂያ ይደርስዎታል።"
-    },
-    "worker_declined": {
-        "en": "❌ Declined. Contact admin for details.",
-        "am": "❌ ውድቅ ተደርጓል። ለተጨማሪ መረጃ አስተዳዳሪውን ያነጋግሩ።"
-    },
-    "order_created": {
-        "en": "✅ Order created! Searching for workers...",
-        "am": "✅ ትዕዛዝ ተፈጥሯል! ሰራተኛ እየፈለግን ነው..."
-    },
-    "job_post": {
-        "en": "📍 {bureau}\n🏙️ {city}\n💰 100 ETB/hour\n[Accept]",
-        "am": "📍 {bureau}\n🏙️ {city}\n💰 በሰዓት 100 ብር\n[ተቀበል]"
-    },
-    "worker_accepted": {
-        "en": "✅ Worker accepted! They’ll check in soon.",
-        "am": "✅ ሰራተኛ ተገኝቷል! በቅርቡ ያገኙዎታል።"
-    },
-    "final_payment": {
-        "en": "💼 Job done! Please pay {amount} ETB to the worker and upload receipt.",
-        "am": "💼 ስራ ተጠናቋል! እባክዎን {amount} ብር ለሰራተኛው ከፍለው ደረሰኙን ይላኩ።"
-    },
-    "payment_complete": {
-        "en": "✅ Payment confirmed! Thank you.",
-        "am": "✅ ክፍያ ተረጋግጧል! እናመሰግናለን።"
-    },
-    "commission_request": {
-        "en": "💰 You earned {total} ETB! Send 25% ({commission}) to @YourTelegram within 3 hours.",
-        "am": "💰 {total} ብር ሰርተዋል! የ25% ኮሚሽን ({commission}) በ3 ሰዓት ውስጥ ለ @YourTelegram ይላኩ።"
-    },
-    "commission_timeout": {
-        "en": "⏰ 1 hour left to send your 25% commission!",
-        "am": "⏰ የ25% ኮሚሽን ለመላክ 1 ሰዓት ብቻ ይቀራል!"
-    },
-    "commission_missed": {
-        "en": "🚨 You missed the commission deadline. Contact admin immediately.",
-        "am": "🚨 የኮሚሽን መክፈያ ጊዜ አልፏል። በአስቸኳይ አስተዳዳሪውን ያነጋግሩ።"
-    },
-    "request_new_worker": {
-        "en": "🔄 Request New Worker",
-        "am": "🔄 ሌላ ሰራተኛ ይፈለግ"
-    },
-    "reassign_reason": {
-        "en": "Why do you want a new worker?",
-        "am": "ሌላ ሰራተኛ ለምን ፈለጉ?"
-    },
-    "worker_reassigned": {
-        "en": "🔁 Job reopened. A new worker will be assigned soon.",
-        "am": "🔁 ስራው በድጋሚ ክፍት ሆኗል። በቅርቡ ሌላ ሰራተኛ ይመደባል።"
-    },
-    "dispute_button": {
-        "en": "⚠️ Dispute",
-        "am": "⚠️ ቅሬታ"
-    },
-    "dispute_reason": {
-        "en": "Select dispute reason:",
-        "am": "የቅሬታ ምክንያቱን ይምረጡ፡"
-    },
-    "reason_no_show": {
-        "en": "Worker didn’t show",
-        "am": "ሰራተኛው አልመጣም"
-    },
-    "reason_payment": {
-        "en": "Payment issue",
-        "am": "የክፍያ ችግር"
-    },
-    "reason_fake_photo": {
-        "en": "Fake photo",
-        "am": "ሀሰተኛ ፎቶ"
-    },
-    "dispute_submitted": {
-        "en": "📄 Dispute submitted. Admin will review shortly.",
-        "am": "📄 ቅሬታዎ ቀርቧል። አስተዳዳሪው በቅርቡ ይመለከተዋል።"
-    },
-    "rate_worker": {
-        "en": "How would you rate this worker? (1–5 stars)",
-        "am": "ለዚህ ሰራተኛ ምን ያህል ኮከብ ይሰጣሉ? (ከ1-5 ኮከቦች)"
-    },
-    "rating_thanks": {
-        "en": "Thank you! Your feedback helps us improve.",
-        "am": "እናመሰግናለን! የእርስዎ አስተያየት አገልግሎታችንን ለማሻሻል ይረዳናል።"
-    },
-    "location_off": {
-        "en": "⚠️ Worker’s location is off!",
-        "am": "⚠️ የሰራተኛው መገኛ ጠፍቷል!"
-    },
-    "turn_on_location": {
-        "en": "Turn On Location",
-        "am": "መገኛን አብራ"
-    },
-    "location_alert_sent": {
-        "en": "🔔 Request sent. Worker will be notified to turn on location.",
-        "am": "🔔 ጥያቄ ተልኳል። ሰራተኛው መገኛውን እንዲያበራ መልዕክት ይደርሰዋል።"
-    },
-    "user_banned": {
-        "en": "🚫 You are banned from using Yazilign. Contact admin for details.",
-        "am": "🚫 ከያዝልኝ አገልግሎት ታግደዋል። ለዝርዝር መረጃ አስተዳዳሪውን ያነጋግሩ።"
-    }
+    "start": {"en": "Welcome! Are you a Client, Worker, or Admin?", "am": "እንኳን በደህና መጡ!"},
+    "cancel": {"en": "↩️ Cancel", "am": "↩️ ሰርዝ"},
+    "choose_city": {"en": "📍 Choose city:", "am": "📍 ከተማ ይምረጡ፡"},
+    "city_not_active": {"en": "🚧 Not in {city} yet. Choose Addis Ababa.", "am": "🚧 በ{city} አይሰራም። አዲስ አበባ ይምረጡ።"},
+    "enter_bureau": {"en": "📍 Type bureau name:", "am": "📍 የቢሮ ስሙን ይፃፉ:"},
+    "send_location": {"en": "📍 Share live location:", "am": "📍 ቦታዎን ያጋሩ:"},
+    "booking_fee": {"en": "Pay 100 ETB and upload receipt.", "am": "100 ብር ይላክሱ እና ሲምበር ያስገቡ።"},
+    "worker_welcome": {"en": "👷 Send your full name:", "am": "👷 ሙሉ ስምዎን ይላኩ:"},
+    "worker_phone": {"en": "📱 Send phone number:", "am": "📱 ስልክ ቁጥርዎን ይላኩ:"},
+    "worker_fyda": {"en": "📸 Send FRONT & BACK of Fyda:", "am": "📸 ፊዳዎን ገጽ እና ወለድ ያስገቡ:"},
+    "admin_approve_worker": {"en": "🆕 New worker!\nName: {name}\nPhone: {phone}\nApprove?", "am": "🆕 አዲስ ሠራተኛ!\nስም: {name}\nስልክ: {phone}"},
+    "worker_approved": {"en": "✅ Approved!", "am": "✅ ተፈቅዶልናል!"},
+    "worker_declined": {"en": "❌ Declined.", "am": "❌ ተውግዷል።"},
+    "order_created": {"en": "✅ Order created! Searching for workers...", "am": "✅ ትዕዛዝ ተፈጸመ!"},
+    "job_post": {"en": "📍 {bureau}\n🏙️ {city}\n💰 {rate} ETB/hour\n[Accept]", "am": "📍 {bureau}\n🏙️ {city}\n💰 {rate} ብር/ሰዓት\n[ቀበል]"},
+    "worker_accepted": {"en": "✅ Worker accepted! They’ll check in soon.", "am": "✅ ሠራተኛ ተቀብሏል!"},
+    "final_hours": {"en": "How many hours did the worker wait? (Min 1, Max 12)", "am": "ሰራተኛው ስንት ሰዓት ጠብቷል? (ከ1-12)"},
+    "final_payment": {"en": "💼 Pay {amount} ETB to worker and upload receipt.", "am": "💼 ለሰራተኛ {amount} ብር ይላክሱ እና ሲምበር ያስገቡ።"},
+    "payment_complete": {"en": "✅ Payment confirmed! Thank you.", "am": "✅ ክፍያ ተረጋግጧል! እናመሰግናለን።"},
+    "commission_request": {"en": "💰 Send 25% ({commission}) within 3 hours.", "am": "💰 25% ({commission}) በ3 ሰዓት ውስጥ ይላክሱ።"},
+    "commission_timeout": {"en": "⏰ 1 hour left!", "am": "⏰ 1 ሰዓት ብቻ ይቀራል!"},
+    "commission_missed": {"en": "🚨 Missed deadline. Contact admin.", "am": "🚨 ጊዜ አልፏል። አስተዳዳሪ ያነጋግሩ።"},
+    "request_new_worker": {"en": "🔄 Request New Worker", "am": "🔄 ሌላ ሰራተኛ ይፈለግ"},
+    "reassign_reason": {"en": "Why new worker?", "am": "ለምን ሌላ ሰራተኛ?"},
+    "worker_reassigned": {"en": "🔁 Job reopened.", "am": "🔁 ስራ በድጋሚ ክፍት ሆኗል።"},
+    "dispute_button": {"en": "⚠️ Dispute", "am": "⚠️ ቅሬታ"},
+    "dispute_reason": {"en": "Select reason:", "am": "ምክንያት ይምረጡ:"},
+    "reason_no_show": {"en": "Worker didn’t show", "am": "ሰራተኛ አልመጣም"},
+    "reason_payment": {"en": "Payment issue", "am": "የክፍያ ችግር"},
+    "reason_fake_photo": {"en": "Fake photo", "am": "ሀሰተኛ ፎቶ"},
+    "dispute_submitted": {"en": "📄 Dispute submitted.", "am": "📄 ቅሬታ ቀርቧል።"},
+    "rate_worker": {"en": "Rate worker (1–5 stars):", "am": "ኮከብ ይሰጡ (1-5):"},
+    "rating_thanks": {"en": "Thank you!", "am": "እናመሰግናለን!"},
+    "location_off": {"en": "⚠️ Location off!", "am": "⚠️ መገኛ ጠፍቷል!"},
+    "turn_on_location": {"en": "Turn On Location", "am": "መገኛ አብራ"},
+    "location_alert_sent": {"en": "🔔 Request sent.", "am": "🔔 ጥያቄ ተልኳል።"},
+    "user_banned": {"en": "🚫 Banned.", "am": "🚫 ታግደዋል።"}
 }
 
 def get_msg(key, lang="en", **kwargs):
@@ -270,34 +159,39 @@ def ban_user(phone, tg_id, reason=""):
     except Exception as e:
         logger.error(f"Ban error: {e}")
 
+def update_worker_rating(worker_id, rating):
+    try:
+        sheet = get_worksheet("Workers")
+        records = sheet.get_all_records()
+        for i, record in enumerate(records, start=2):
+            if str(record.get("Worker_ID")) == str(worker_id):
+                current_rating = float(record.get("Rating", 0))
+                total_earnings = int(record.get("Total_Earnings", 0))
+                new_rating = (current_rating * total_earnings + rating) / (total_earnings + 1)
+                sheet.update_cell(i, 5, str(new_rating))
+                break
+    except Exception as e:
+        logger.error(f"Rating update error: {e}")
+
 # ======================
-# COMMISSION TIMER
+# COMMISSION TIMER WITH AUTO-BAN
 # ======================
 
 def start_commission_timer(application, order_id, worker_id, total_amount):
     commission = int(total_amount * COMMISSION_PERCENT)
     
-    def first_reminder():
-        asyncio.run_coroutine_threadsafe(
-            application.bot.send_message(
-                chat_id=worker_id,
-                text=get_msg("commission_timeout", "en")
-            ),
-            application.updater.dispatcher.loop
-        )
-    
-    def final_alert():
+    def final_action():
+        # Auto-ban after 3 hours if no proof
+        ban_user(phone="unknown", tg_id=worker_id, reason="Missed commission")
         asyncio.run_coroutine_threadsafe(
             application.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
-                text=f"🚨 Commission missed!\nOrder: {order_id}\nWorker: {worker_id}\nAmount: {commission} ETB"
+                text=f"🚨 Auto-banned Worker {worker_id} for missing commission on {order_id}"
             ),
             application.updater.dispatcher.loop
         )
-        # Auto-ban logic can be added here after manual review
     
-    Timer(2 * 3600, first_reminder).start()      # 2 hours
-    Timer(3 * 3600, final_alert).start()         # 3 hours
+    Timer(COMMISSION_TIMEOUT_HOURS * 3600, final_action).start()
 
 # ======================
 # TELEGRAM HANDLERS
@@ -305,8 +199,7 @@ def start_commission_timer(application, order_id, worker_id, total_amount):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    USER_STATE[user_id] = {"state": STATE_NONE, "data": {}, "lang": "en"}  # Default English
-    
+    USER_STATE[user_id] = {"state": STATE_NONE, "data": {}, "lang": "en"}
     keyboard = [["Client", "Worker"]]
     if user_id == ADMIN_CHAT_ID:
         keyboard.append(["Admin"])
@@ -379,6 +272,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         USER_STATE[user_id] = {"state": STATE_WORKER_FYDA, "data": data, "lang": lang}
         await update.message.reply_text(get_msg("worker_fyda", lang))
 
+    elif state == STATE_CLIENT_FINAL_HOURS:
+        try:
+            hours = int(text)
+            if 1 <= hours <= 12:
+                data["hours"] = hours
+                total = HOURLY_RATE * hours
+                data["total"] = total
+                USER_STATE[user_id] = {"state": STATE_CLIENT_FINAL_RECEIPT, "data": data, "lang": lang}
+                await update.message.reply_text(get_msg("final_payment", lang, amount=total - 100))
+            else:
+                await update.message.reply_text(get_msg("final_hours", lang))
+        except ValueError:
+            await update.message.reply_text(get_msg("final_hours", lang))
+
+    elif state == STATE_RATING:
+        try:
+            rating = int(text)
+            if 1 <= rating <= 5:
+                update_worker_rating(data["worker_id"], rating)
+                await update.message.reply_text(get_msg("rating_thanks", lang))
+                await start(update, context)
+            else:
+                await update.message.reply_text(get_msg("rate_worker", lang))
+        except ValueError:
+            await update.message.reply_text(get_msg("rate_worker", lang))
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     state_info = USER_STATE.get(user_id, {})
@@ -396,7 +315,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sheet = get_worksheet("Workers")
             sheet.append_row([
                 str(uuid4())[:8], data["name"], data["phone"], str(user_id),
-                "", "0", "Pending"
+                "0", "0", "Pending"
             ])
         except Exception as e:
             logger.error(f"Worker save error: {e}")
@@ -414,19 +333,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if data["fyda_back"]:
             await context.bot.send_photo(chat_id=ADMIN_CHAT_ID, photo=data["fyda_back"])
 
-        await update.message.reply_text("📄 Sent to admin.", reply_markup=ReplyKeyboardMarkup([[get_msg("cancel", lang)]]))
+        await update.message.reply_text("📄 Sent to admin.")
 
-async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    state_info = USER_STATE.get(user_id, {})
-    state = state_info.get("state", STATE_NONE)
-    data = state_info.get("data", {})
-    lang = state_info.get("lang", "en")
-
-    if state == STATE_CLIENT_LOCATION:
-        data["location"] = (update.message.location.latitude, update.message.location.longitude)
+    elif state == STATE_CLIENT_BOOKING_RECEIPT:
+        # Save booking receipt and create order
         order_id = f"YZL-{datetime.now().strftime('%Y%m%d')}-{str(uuid4())[:4].upper()}"
-        
         try:
             sheet = get_worksheet("Orders")
             sheet.append_row([
@@ -437,15 +348,58 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Order create error: {e}")
 
-        await update.message.reply_text(get_msg("booking_fee", lang))
-        USER_STATE[user_id] = {"state": STATE_CLIENT_BOOKING_RECEIPT, "data": data, "lang": lang}
+        # Broadcast to worker channel
+        await context.bot.send_message(
+            chat_id=WORKER_CHANNEL_ID,
+            text=get_msg("job_post", "en", bureau=data["bureau"], city=data["city"], rate=HOURLY_RATE),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Accept", callback_data=f"accept_{order_id}")]])
+        )
+        await update.message.reply_text(get_msg("order_created", lang))
+
+    elif state == STATE_CLIENT_FINAL_RECEIPT:
+        # Final payment received
+        total = data["total"]
+        worker_id = data["worker_id"]
+        commission = int(total * COMMISSION_PERCENT)
+
+        # Update order as paid
+        try:
+            sheet = get_worksheet("Orders")
+            records = sheet.get_all_records()
+            for i, record in enumerate(records, start=2):
+                if record.get("Order_ID") == data["order_id"]:
+                    sheet.update_cell(i, 12, "Fully Paid")
+                    break
+        except Exception as e:
+            logger.error(f"Order update error: {e}")
+
+        # Notify worker to send commission
+        await context.bot.send_message(
+            chat_id=worker_id,
+            text=get_msg("commission_request", "en", total=total, commission=commission)
+        )
+        start_commission_timer(context.application, data["order_id"], worker_id, total)
+
+        # Ask for rating
+        USER_STATE[user_id] = {"state": STATE_RATING, "data": {"worker_id": worker_id}, "lang": lang}
+        await update.message.reply_text(get_msg("rate_worker", lang))
+
+async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    state_info = USER_STATE.get(user_id, {})
+    state = state_info.get("state", STATE_NONE)
+    if state == STATE_CLIENT_LOCATION:
+        data = state_info["data"]
+        data["location"] = (update.message.location.latitude, update.message.location.longitude)
+        USER_STATE[user_id]["data"] = data
+        await update.message.reply_text(get_msg("booking_fee", state_info["lang"]))
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     data = query.data
-    lang = "en"  # Admin uses English
+    lang = "en"
 
     if data == "cancel":
         USER_STATE[user_id] = {"state": STATE_NONE, "data": {}, "lang": "en"}
@@ -479,6 +433,44 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=worker_tg_id, text=get_msg("worker_declined", "en"))
         await query.edit_message_caption(caption="❌ Declined.")
 
+    elif data.startswith("accept_"):
+        order_id = data.split("_")[1]
+        try:
+            sheet = get_worksheet("Orders")
+            records = sheet.get_all_records()
+            order = None
+            for record in records:
+                if record.get("Order_ID") == order_id and record.get("Status") == "Booking Paid":
+                    order = record
+                    break
+            if order:
+                # Assign worker
+                row_idx = records.index(order) + 2
+                sheet.update_cell(row_idx, 7, str(user_id))  # Worker_ID
+                sheet.update_cell(row_idx, 6, "Assigned")   # Status
+
+                # Notify client
+                await context.bot.send_message(
+                    chat_id=int(order["Client_TG_ID"]),
+                    text=get_msg("worker_accepted", "en")
+                )
+                # Ask for final hours after job done
+                USER_STATE[int(order["Client_TG_ID"])] = {
+                    "state": STATE_CLIENT_FINAL_HOURS,
+                    "data": {"order_id": order_id, "worker_id": str(user_id)},
+                    "lang": "en"
+                }
+                await context.bot.send_message(
+                    chat_id=int(order["Client_TG_ID"]),
+                    text=get_msg("final_hours", "en")
+                )
+        except Exception as e:
+            logger.error(f"Accept error: {e}")
+
+    elif data.startswith("dispute_"):
+        # Handle dispute submission
+        pass  # Simplified for brevity
+
 # ======================
 # FLASK / HEALTH
 # ======================
@@ -487,7 +479,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route("/health")
 def health():
-    return jsonify({"status": "ok", "uptime": "running"})
+    return jsonify({"status": "ok"})
 
 # ======================
 # MAIN
@@ -495,7 +487,8 @@ def health():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=port)).start()
+    from threading import Thread
+    Thread(target=lambda: flask_app.run(host="0.0.0.0", port=port)).start()
 
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
