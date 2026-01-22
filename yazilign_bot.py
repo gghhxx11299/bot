@@ -23,7 +23,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import asyncio
 
 # ======================
@@ -1135,7 +1135,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Location alert error: {e}")
 
 # ======================
-# FLASK / HEALTH
+# FLASK / HEALTH + WEBHOOK
 # ======================
 
 flask_app = Flask(__name__)
@@ -1143,6 +1143,17 @@ flask_app = Flask(__name__)
 @flask_app.route("/health")
 def health():
     return jsonify({"status": "ok"})
+
+# 👇 HANDLE TELEGRAM WEBHOOK
+@flask_app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def telegram_webhook():
+    if request.method == "POST":
+        update = Update.de_json(request.get_json(force=True), application.bot)
+        asyncio.run_coroutine_threadsafe(
+            application.update_queue.put(update),
+            application.updater.dispatcher.loop
+        )
+    return "OK"
 
 # ======================
 # ERROR HANDLER
@@ -1170,10 +1181,10 @@ if __name__ == "__main__":
 
     webhook_url = os.getenv("WEBHOOK_URL")
     if webhook_url:
+        # ✅ NO url_path — Flask handles the route
         application.run_webhook(
             listen="0.0.0.0",
             port=port,
-            url_path=BOT_TOKEN,
             webhook_url=f"{webhook_url}/{BOT_TOKEN}"
         )
     else:
