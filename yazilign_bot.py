@@ -25,6 +25,9 @@ from telegram.ext import (
 from flask import Flask, jsonify, request
 import asyncio
 
+# ======================
+# CONFIGURATION
+# ======================
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN_MAIN")
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID"))
 SHEET_ID = os.getenv("SHEET_ID")
@@ -58,6 +61,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 USER_STATE = {}
 
+# ======================
+# USER STATES
+# ======================
 STATE_NONE = 0
 STATE_CLIENT_CITY = 1
 STATE_CLIENT_BUREAU = 2
@@ -90,6 +96,9 @@ STATE_WORKER_AT_FRONT = 28
 STATE_CLIENT_CONFIRM_ARRIVAL = 29
 STATE_WORKER_ACTIVE_JOB = 30
 
+# ======================
+# MESSAGES
+# ======================
 MESSAGES = {
     "start": {"en": "Welcome! Are you a Client, Worker, or Admin?", "am": "እንኳን በደህና መጡ!"},
     "cancel": {"en": "↩️ Back to Main Menu", "am": "↩️ ወደ ዋና ገጽ"},
@@ -145,6 +154,9 @@ def get_msg(key, **kwargs):
         am_text = am_text.format(**kwargs)
     return f"{en_text}\n{am_text}"
 
+# ======================
+# LOCATION CALCULATION
+# ======================
 def calculate_distance(lat1, lon1, lat2, lon2):
     R = 6371000
     lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
@@ -154,6 +166,9 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     c = 2 * atan2(sqrt(a), sqrt(1-a))
     return R * c
 
+# ======================
+# GOOGLE SHEETS
+# ======================
 def get_sheet_client():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(
         GOOGLE_CREDS,
@@ -206,7 +221,7 @@ def get_or_create_user(user_id, first_name, username, role=None):
             str(user_id),
             first_name,
             username or "",
-            "",
+            "",  # Phone_Number
             role or "Client",
             "Active",
             now,
@@ -232,6 +247,14 @@ def update_worker_rating(worker_id, rating):
     except Exception as e:
         logger.error(f"Rating update error: {e}")
 
+# ======================
+# GLOBAL LOOP FOR THREAD-SAFE OPERATIONS
+# ======================
+MAIN_LOOP = None
+
+# ======================
+# COMMISSION TIMER
+# ======================
 def start_commission_timer(application, order_id, worker_id, total_amount):
     commission = int(total_amount * COMMISSION_PERCENT)
     def final_action():
@@ -241,10 +264,13 @@ def start_commission_timer(application, order_id, worker_id, total_amount):
                 chat_id=ADMIN_CHAT_ID,
                 text=f"🚨 Auto-banned Worker {worker_id} for missing commission on {order_id}"
             ),
-            application.loop
+            MAIN_LOOP
         )
     Timer(COMMISSION_TIMEOUT_HOURS * 3600, final_action).start()
 
+# ======================
+# LOCATION MONITOR
+# ======================
 async def check_worker_location(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     worker_id = job.data["worker_id"]
@@ -271,6 +297,9 @@ async def check_worker_location(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Location ping error: {e}")
 
+# ======================
+# TELEGRAM HANDLERS
+# ======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
@@ -890,7 +919,7 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             chat_id=int(client_id),
                             text="✅ Worker checked in! Live location active.\n✅ ሠራተኛ ተገኝቷል! የቀጥታ መገኛ አንስቶ ነው።"
                         ),
-                        context.application.loop
+                        MAIN_LOOP
                     )
                     order_id = record.get("Order_ID")
                     job_lat = float(record.get("Latitude", 0))
@@ -909,14 +938,14 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 chat_id=int(client_id),
                                 text=get_msg("worker_far_ban")
                             ),
-                            context.application.loop
+                            MAIN_LOOP
                         )
                         asyncio.run_coroutine_threadsafe(
                             context.bot.send_message(
                                 chat_id=user_id,
                                 text=get_msg("worker_far_ban")
                             ),
-                            context.application.loop
+                            MAIN_LOOP
                         )
                         logger.info(f"Auto-banned worker {user_id} for moving {distance:.0f}m from job site")
                     elif distance > MAX_WARNING_DISTANCE:
@@ -925,14 +954,14 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 chat_id=int(client_id),
                                 text=get_msg("worker_far_warning")
                             ),
-                            context.application.loop
+                            MAIN_LOOP
                         )
                         asyncio.run_coroutine_threadsafe(
                             context.bot.send_message(
                                 chat_id=user_id,
                                 text=get_msg("worker_far_warning")
                             ),
-                            context.application.loop
+                            MAIN_LOOP
                         )
                         logger.info(f"Warning: worker {user_id} moved {distance:.0f}m from job site")
                     break
@@ -1103,9 +1132,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Location alert error: {e}")
 
+# ======================
+# ERROR HANDLER
+# ======================
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Exception while handling an update:", exc_info=context.error)
 
+# ======================
+# FLASK APP
+# ======================
 flask_app = Flask(__name__)
 
 @flask_app.route("/health")
@@ -1116,17 +1151,23 @@ def health():
 def telegram_webhook():
     if request.method == "POST":
         update = Update.de_json(request.get_json(force=True), application.bot)
-        asyncio.run_coroutine_threadsafe(
-            application.update_queue.put(update),
-            application.loop
-        )
+        application.update_queue.put_nowait(update)
         return "OK"
     return "Method not allowed", 405
 
+# ======================
+# MAIN
+# ======================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     webhook_url = os.getenv("WEBHOOK_URL")
 
+    # Initialize global loop
+    global MAIN_LOOP
+    MAIN_LOOP = asyncio.new_event_loop()
+    asyncio.set_event_loop(MAIN_LOOP)
+
+    # Build application BEFORE Flask starts
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT, handle_message))
@@ -1135,15 +1176,26 @@ if __name__ == "__main__":
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_error_handler(error_handler)
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(application.initialize())
-    loop.run_until_complete(application.updater.start_polling())
+    # Initialize app and updater
+    MAIN_LOOP.run_until_complete(application.initialize())
+    MAIN_LOOP.run_until_complete(application.updater.start_polling())
 
+    # Set Telegram webhook
     if webhook_url:
         import requests
         full_url = f"{webhook_url.rstrip('/')}/{BOT_TOKEN}"
         resp = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={full_url}")
         logger.info(f"Set webhook response: {resp.json()}")
 
-    flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+    # Start Flask in background thread
+    flask_thread = Thread(target=lambda: flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False))
+    flask_thread.daemon = True
+    flask_thread.start()
+
+    # Run event loop forever
+    try:
+        MAIN_LOOP.run_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        MAIN_LOOP.run_until_complete(application.shutdown())
