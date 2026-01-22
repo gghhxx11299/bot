@@ -22,7 +22,6 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from flask import Flask, jsonify, request
 import asyncio
 
 # ======================
@@ -239,7 +238,7 @@ def update_worker_rating(worker_id, rating):
         for i, record in enumerate(records, start=2):
             if str(record.get("Worker_ID")) == str(worker_id):
                 current_rating = float(record.get("Rating", 0))
-                total_jobs = int(record.get("Total_Earnings", 0))
+                total_jobs = int(record.get("Total_Earnings", 0)) or 1
                 new_rating = (current_rating * total_jobs + rating) / (total_jobs + 1)
                 sheet.update_cell(i, 5, str(new_rating))
                 sheet.update_cell(i, 6, str(total_jobs + 1))
@@ -348,10 +347,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "↩️ Back to Main Menu" or text == "↩️ ወደ ዋና ገጽ":
         await start(update, context)
         return
-    # 👇 HEALTH CHECK FOR RENDER
-    if text == "/health":
-        await update.message.reply_text("OK")
-        return
     if text == "Client":
         USER_STATE[user_id] = {"state": STATE_CLIENT_CITY, "data": {}}
         keyboard = [[city] for city in ALL_CITIES]
@@ -361,7 +356,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
         )
     elif text == "Worker":
-        # ✅ SHOW LOGIN OR REGISTER MENU
         keyboard = [
             ["✅ Register as New Worker"],
             ["🔑 Login as Existing Worker"],
@@ -380,7 +374,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
             )
         elif text == "🔑 Login as Existing Worker":
-            # ✅ CHECK TELEGRAM ID IN WORKERS SHEET
             try:
                 worker_sheet = get_worksheet("Workers")
                 records = worker_sheet.get_all_records()
@@ -390,7 +383,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         worker_info = record
                         break
                 if worker_info:
-                    # ✅ TAKE TO DASHBOARD
                     dashboard_text = (
                         f"👷‍♂️ **Worker Dashboard**\n"
                         f"Name: {worker_info['Full_Name']}\n"
@@ -567,7 +559,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(get_msg("rate_worker"))
         except ValueError:
             await update.message.reply_text(get_msg("rate_worker"))
-    # Handle profile updates
     elif text == "📱 Phone":
         USER_STATE[user_id] = {"state": STATE_WORKER_UPDATE_PHONE, "data": data}
         await update.message.reply_text(
@@ -666,7 +657,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_msg("worker_fyda_front"),
             reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
         )
-    # 👇 TWO-WAY HANDSHAKE FLOW
     elif state == STATE_WORKER_AT_FRONT:
         if text == "✅ I'm at the front of the line":
             order_id = data["order_id"]
@@ -695,7 +685,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == "✅ Confirm Arrival":
             order_id = data["order_id"]
             worker_id = data["worker_id"]
-            # Update order status
             try:
                 sheet = get_worksheet("Orders")
                 records = sheet.get_all_records()
@@ -705,7 +694,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         break
             except Exception as e:
                 logger.error(f"Arrival update error: {e}")
-            # Prompt for hours
             await update.message.reply_text(get_msg("final_hours"))
             USER_STATE[user_id] = {
                 "state": STATE_CLIENT_FINAL_HOURS,
@@ -884,7 +872,6 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "✅ Order created! Notifying workers...\n✅ ትዕዛዝ ተፈጸመ! ሠራተኞች ተሳይተዋል..."
         )
-        # ✅ SEND TO EACH WORKER DIRECTLY (NO CHANNEL)
         try:
             worker_sheet = get_worksheet("Workers")
             worker_records = worker_sheet.get_all_records()
@@ -972,7 +959,6 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     break
         except Exception as e:
             logger.error(f"Check-in update error: {e}")
-        # 👇 SEND ACTION BUTTONS AFTER CHECK-IN
         keyboard = [
             ["✅ I'm at the front of the line"],
             ["↩️ Back to Main Menu"]
@@ -1033,7 +1019,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = data.split("_")
         order_id = parts[1]
         client_id = parts[2]
-        # 🔒 ATOMIC JOB ASSIGNMENT
         try:
             sheet = get_worksheet("Orders")
             records = sheet.get_all_records()
@@ -1054,7 +1039,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Job lock check error: {e}")
             await context.bot.send_message(chat_id=user_id, text="⚠️ Job assignment failed. Try again.")
             return
-        # Proceed with assignment
         try:
             sheet.update_cell(row_idx, 7, str(user_id))
             sheet.update_cell(row_idx, 6, "Assigned")
@@ -1093,10 +1077,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=user_id,
                 text=get_msg("checkin_photo", bureau=bureau)
             )
-            # 👇 START LOCATION MONITOR
             context.job_queue.run_repeating(
                 check_worker_location,
-                interval=300,  # 5 minutes
+                interval=300,
                 first=10,
                 data={"worker_id": user_id, "order_id": order_id},
                 name=f"location_monitor_{order_id}"
@@ -1142,27 +1125,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Location alert error: {e}")
 
 # ======================
-# FLASK / HEALTH + WEBHOOK
-# ======================
-flask_app = Flask(__name__)
-
-@flask_app.route("/health")
-def health():
-    return jsonify({"status": "ok"})
-
-# 👇 FIXED WEBHOOK ROUTE
-@flask_app.route(f"/{BOT_TOKEN}", methods=["POST"])
-def telegram_webhook():
-    if request.method == "POST":
-        update = Update.de_json(request.get_json(force=True), application.bot)
-        asyncio.run_coroutine_threadsafe(
-            application.update_queue.put(update),
-            application.loop
-        )
-        return "OK"
-    return "Method not allowed", 405
-
-# ======================
 # ERROR HANDLER
 # ======================
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -1175,7 +1137,6 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     webhook_url = os.getenv("WEBHOOK_URL")
 
-    # Build the application
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT, handle_message))
@@ -1185,35 +1146,12 @@ if __name__ == "__main__":
     application.add_error_handler(error_handler)
 
     if webhook_url:
-        # Set Telegram webhook once
-        full_webhook = f"{webhook_url.rstrip('/')}/{BOT_TOKEN}"
-        import requests
-        resp = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={full_webhook}")
-        logger.info(f"Webhook set response: {resp.json()}")
-
-        # Start Flask in background thread
-        from threading import Thread
-        flask_thread = Thread(target=lambda: flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False))
-        flask_thread.daemon = True
-        flask_thread.start()
-
-        # Initialize the application and start the updater WITHOUT a server
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        async def run_bot():
-            await application.initialize()
-            await application.updater.start_polling()  # or start_webhook() without listen/port
-            # Keep the bot running
-            await asyncio.Event().wait()
-
-        try:
-            loop.run_until_complete(run_bot())
-        except KeyboardInterrupt:
-            pass
-        finally:
-            loop.run_until_complete(application.shutdown())
+        # Use PTB's built-in webhook server (no Flask!)
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            webhook_url=f"{webhook_url}/{BOT_TOKEN}",
+            secret_token=None
+        )
     else:
-        # Local development: use polling
         application.run_polling()
