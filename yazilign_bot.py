@@ -1232,7 +1232,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await context.bot.send_message(chat_id=client_id, text="✅ Payment verified! Job proceeding.\n✅ ክፍያ ተረጋግጧል! ስራ ተከዋል።")
         await query.edit_message_caption(caption="✅ Verified!\n✅ ተረጋግጧል!")
-        elif data.startswith("reject_"):
+    elif data.startswith("reject_"):
         client_id = int(data.split("_")[1])
         await context.bot.send_message(chat_id=client_id, text="❌ Payment rejected. Please resend correct receipt.\n❌ ክፍያ ተውግዷል። እባክዎን ትክክለኛ ሲምበር ይላኩ።")
         await query.edit_message_caption(caption="❌ Rejected.\n❌ ተውግዷል።")
