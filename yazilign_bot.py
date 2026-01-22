@@ -263,7 +263,7 @@ def start_commission_timer(application, order_id, worker_id, total_amount):
     Timer(COMMISSION_TIMEOUT_HOURS * 3600, final_action).start()
 
 # ======================
-# LOCATION MONITOR (FIXES GHOSTING)
+# LOCATION MONITOR
 # ======================
 async def check_worker_location(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
@@ -343,7 +343,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state_info = USER_STATE.get(user_id, {"state": STATE_NONE, "data": {}})
     state = state_info["state"]
     data = state_info["data"]
-    # ✅ UNIVERSAL CANCEL BUTTON
     if text == "↩️ Back to Main Menu" or text == "↩️ ወደ ዋና ገጽ":
         await start(update, context)
         return
@@ -1146,7 +1145,10 @@ if __name__ == "__main__":
     application.add_error_handler(error_handler)
 
     if webhook_url:
-        # Use PTB's built-in webhook server (no Flask!)
+        # Clean up any old webhook first
+        import requests
+        requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
+        # Set new webhook and run
         application.run_webhook(
             listen="0.0.0.0",
             port=port,
