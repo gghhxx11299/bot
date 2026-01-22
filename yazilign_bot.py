@@ -24,6 +24,8 @@ from telegram.ext import (
 )
 from flask import Flask, jsonify, request
 import asyncio
+import signal
+import sys
 
 # ======================
 # CONFIGURATION
@@ -331,24 +333,23 @@ def update_worker_rating(worker_id, rating):
         logger.error(f"Rating update error: {e}")
 
 # ======================
-# GLOBAL LOOP FOR THREAD-SAFE OPERATIONS
-# ======================
-MAIN_LOOP = None
-
-# ======================
 # COMMISSION TIMER
 # ======================
 def start_commission_timer(application, order_id, worker_id, total_amount):
     commission = int(total_amount * COMMISSION_PERCENT)
     def final_action():
         ban_user(worker_id, reason="Missed commission")
-        asyncio.run_coroutine_threadsafe(
-            application.bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text=f"🚨 Auto-banned Worker {worker_id} for missing commission on {order_id}"
-            ),
-            MAIN_LOOP
-        )
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(
+                application.bot.send_message(
+                    chat_id=ADMIN_CHAT_ID,
+                    text=f"🚨 Auto-banned Worker {worker_id} for missing commission on {order_id}"
+                )
+            )
+        except Exception as e:
+            logger.error(f"Commission timer error: {e}")
     Timer(COMMISSION_TIMEOUT_HOURS * 3600, final_action).start()
 
 # ======================
@@ -1060,36 +1061,46 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["location"] = (update.message.location.latitude, update.message.location.longitude)
         USER_STATE[user_id]["data"] = data
         order_id = f"YZL-{datetime.now().strftime('%Y%m%d')}-{str(uuid4())[:4].upper()}"
+        
+        logger.info(f"Creating new order {order_id} for client {user_id}")
+        
         try:
             worksheet = get_worksheet("Orders")
+            # Create order with explicit "Pending" status
             worksheet.append_row([
                 order_id,
                 str(datetime.now()),
                 str(user_id),
                 data.get("bureau", ""),
                 data.get("city", ""),
-                "Pending",
-                "",
-                "1",
-                str(HOURLY_RATE),
-                "No",
-                "0",
-                "Pending",
+                "Pending",  # Status - explicitly set to "Pending"
+                "",  # Worker_ID - empty
+                "1",  # Hours
+                str(HOURLY_RATE),  # Hourly_Rate
+                "No",  # Payment_Verified
+                "0",  # Total_Amount
+                "Pending",  # Payment_Status
                 str(update.message.location.latitude),
                 str(update.message.location.longitude)
             ])
+            logger.info(f"Order {order_id} created successfully")
         except Exception as e:
-            logger.error(f"Order create error: {e}")
+            logger.error(f"Order create error: {e}", exc_info=True)
             await update.message.reply_text("⚠️ Failed to create order. Try again.\n⚠️ ትዕዛዝ ማድረግ አልተሳካም።")
             return
+        
         await update.message.reply_text(
             "✅ Order created! Notifying workers...\n✅ ትዕዛዝ ተፈጸመ! ሠራተኞች ተሳይተዋል..."
         )
+        
         try:
             worker_records = get_worksheet_data("Workers")
             notified_count = 0
+            active_workers = 0
+            
             for worker in worker_records:
                 if worker.get("Status") == "Active":
+                    active_workers += 1
                     try:
                         await context.bot.send_message(
                             chat_id=int(worker.get("Telegram_ID", 0)),
@@ -1099,16 +1110,25 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             ])
                         )
                         notified_count += 1
+                        logger.info(f"Notified worker {worker.get('Telegram_ID')} about order {order_id}")
                     except Exception as e:
                         logger.error(f"Failed to notify worker {worker.get('Telegram_ID')}: {e}")
-            logger.info(f"Notified {notified_count} workers about order {order_id}")
+            
+            logger.info(f"Notified {notified_count}/{active_workers} active workers about order {order_id}")
+            
+            if notified_count == 0:
+                await update.message.reply_text(
+                    "⚠️ No active workers available at the moment. Please wait or try again later.\n⚠️ በአሁኑ ጊዜ ምንም ንቁ ሠራተኞች የሉም። እባክዎን ይጠብቁ ወይም ቆይተው እንደገና ይሞክሩ።"
+                )
+                
         except Exception as e:
-            logger.error(f"Worker notification error: {e}")
+            logger.error(f"Worker notification error: {e}", exc_info=True)
             await context.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
                 text=f"🚨 Failed to notify workers for order {order_id}\nError: {str(e)}"
             )
             await update.message.reply_text("⚠️ Workers notified manually. Admin will assign soon.\n⚠️ ሠራተኞች በእጅ ተሳይተዋል።")
+    
     elif state == STATE_WORKER_CHECKIN_LOCATION:
         data["checkin_location"] = (update.message.location.latitude, update.message.location.longitude)
         try:
@@ -1139,12 +1159,14 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif header == "Longitude":
                     longitude_col = j
             
+            order_id = None
             for i, row in enumerate(all_values[1:], start=2):
                 if (worker_id_col is not None and worker_id_col < len(row) and 
                     str(row[worker_id_col]) == str(user_id) and 
                     status_col is not None and status_col < len(row) and 
                     row[status_col] == "Assigned"):
                     
+                    order_id = row[0] if len(row) > 0 else None
                     # Update status to "Checked In"
                     if status_col is not None:
                         worksheet.update_cell(i, status_col + 1, "Checked In")
@@ -1152,12 +1174,9 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     # Notify client
                     if client_id_col is not None and client_id_col < len(row):
                         client_id = row[client_id_col]
-                        asyncio.run_coroutine_threadsafe(
-                            context.bot.send_message(
-                                chat_id=int(client_id),
-                                text="✅ Worker checked in! Live location active.\n✅ ሠራተኛ ተገኝቷል! የቀጥታ መገኛ አንስቶ ነው።"
-                            ),
-                            MAIN_LOOP
+                        await context.bot.send_message(
+                            chat_id=int(client_id),
+                            text="✅ Worker checked in! Live location active.\n✅ ሠራተኛ ተገኝቷል! የቀጥታ መገኛ አንስቶ ነው።"
                         )
                     
                     # Get job location and calculate distance
@@ -1165,7 +1184,6 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         longitude_col is not None and longitude_col < len(row) and
                         row[latitude_col] and row[longitude_col]):
                         
-                        order_id = row[0]  # First column is Order_ID
                         try:
                             job_lat = float(row[latitude_col])
                             job_lon = float(row[longitude_col])
@@ -1184,40 +1202,28 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 
                                 if client_id_col is not None and client_id_col < len(row):
                                     client_id = row[client_id_col]
-                                    asyncio.run_coroutine_threadsafe(
-                                        context.bot.send_message(
-                                            chat_id=int(client_id),
-                                            text=get_msg("worker_far_ban")
-                                        ),
-                                        MAIN_LOOP
+                                    await context.bot.send_message(
+                                        chat_id=int(client_id),
+                                        text=get_msg("worker_far_ban")
                                     )
                                 
-                                asyncio.run_coroutine_threadsafe(
-                                    context.bot.send_message(
-                                        chat_id=user_id,
-                                        text=get_msg("worker_far_ban")
-                                    ),
-                                    MAIN_LOOP
+                                await context.bot.send_message(
+                                    chat_id=user_id,
+                                    text=get_msg("worker_far_ban")
                                 )
                                 logger.info(f"Auto-banned worker {user_id} for moving {distance:.0f}m from job site")
                                 
                             elif distance > MAX_WARNING_DISTANCE:
                                 if client_id_col is not None and client_id_col < len(row):
                                     client_id = row[client_id_col]
-                                    asyncio.run_coroutine_threadsafe(
-                                        context.bot.send_message(
-                                            chat_id=int(client_id),
-                                            text=get_msg("worker_far_warning")
-                                        ),
-                                        MAIN_LOOP
+                                    await context.bot.send_message(
+                                        chat_id=int(client_id),
+                                        text=get_msg("worker_far_warning")
                                     )
                                 
-                                asyncio.run_coroutine_threadsafe(
-                                    context.bot.send_message(
-                                        chat_id=user_id,
-                                        text=get_msg("worker_far_warning")
-                                    ),
-                                    MAIN_LOOP
+                                await context.bot.send_message(
+                                    chat_id=user_id,
+                                    text=get_msg("worker_far_warning")
                                 )
                                 logger.info(f"Warning: worker {user_id} moved {distance:.0f}m from job site")
                                 
@@ -1228,15 +1234,20 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Check-in update error: {e}")
         
-        keyboard = [
-            ["✅ I'm at the front of the line"],
-            ["↩️ Back to Main Menu"]
-        ]
-        await update.message.reply_text(
-            "✅ Check-in complete! When you reach the front of the line, press the button below.\n✅ የመግቢያ ሂደት ተጠናቅቋል! የመስረቃ መስመር ላይ ሲደርሱ ከታች ያለውን ቁልፍ ይጫኑ።",
-            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
-        )
-        USER_STATE[user_id] = {"state": STATE_WORKER_AT_FRONT, "data": {"order_id": order_id}}
+        if order_id:
+            keyboard = [
+                ["✅ I'm at the front of the line"],
+                ["↩️ Back to Main Menu"]
+            ]
+            await update.message.reply_text(
+                "✅ Check-in complete! When you reach the front of the line, press the button below.\n✅ የመግቢያ ሂደት ተጠናቅቋል! የመስረቃ መስመር ላይ ሲደርሱ ከታች ያለውን ቁልፍ ይጫኑ።",
+                reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+            )
+            USER_STATE[user_id] = {"state": STATE_WORKER_AT_FRONT, "data": {"order_id": order_id}}
+        else:
+            await update.message.reply_text(
+                "⚠️ Could not find your assigned order. Please contact admin.\n⚠️ የተመደበልዎ ትዕዛዝ ሊገኝ አልቻለም። አስተዳዳሪውን ያነጋግሩ።"
+            )
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1246,6 +1257,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     first_name = user.first_name or "User"
     username = user.username
     get_or_create_user(user_id, first_name, username)
+    
     if is_user_banned(user_id):
         await query.message.reply_text(get_msg("user_banned"))
         return
@@ -1260,6 +1272,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         order_id = parts[1]
         client_id = parts[2]
+        
+        logger.info(f"Worker {user_id} attempting to accept order {order_id}")
         
         try:
             # Get all orders
@@ -1284,6 +1298,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Get headers
             headers = all_values[0]
+            logger.info(f"Order headers: {headers}")
             
             # Find the order
             order = None
@@ -1302,9 +1317,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if "status" in header.lower():
                         status_col_idx = j
                         break
+                       
+            logger.info(f"Status column index: {status_col_idx}")
+            
+            # Also find Order_ID column
+            order_id_col_idx = None
+            for j, header in enumerate(headers):
+                if header == "Order_ID":
+                    order_id_col_idx = j
+                    break
+            
+            if order_id_col_idx is None:
+                # Try to find Order_ID column with different name
+                for j, header in enumerate(headers):
+                    if "order" in header.lower() and "id" in header.lower():
+                        order_id_col_idx = j
+                        break
+            
+            logger.info(f"Order_ID column index: {order_id_col_idx}")
             
             for i, row in enumerate(all_values[1:], start=2):
-                if len(row) > 0 and row[0] == order_id:  # Order_ID is first column
+                if order_id_col_idx is not None and order_id_col_idx < len(row) and row[order_id_col_idx] == order_id:
                     order = {}
                     for j, header in enumerate(headers):
                         if j < len(row):
@@ -1312,17 +1345,40 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         else:
                             order[header] = ""
                     row_idx = i
+                    logger.info(f"Found order at row {row_idx}: {order}")
                     break
+            
+            if not order:
+                # Try alternative: check first column if order_id not found
+                for i, row in enumerate(all_values[1:], start=2):
+                    if len(row) > 0 and row[0] == order_id:  # First column
+                        order = {}
+                        for j, header in enumerate(headers):
+                            if j < len(row):
+                                order[header] = row[j]
+                            else:
+                                order[header] = ""
+                        row_idx = i
+                        logger.info(f"Found order in first column at row {row_idx}: {order}")
+                        break
             
             if not order:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text="⚠️ Order not found.\n⚠️ ትዕዛዝ አልተገኘም።"
+                    text=f"⚠️ Order {order_id} not found.\n⚠️ ትዕዛዝ {order_id} አልተገኘም።"
                 )
                 return
             
             # Check if job is still available
-            if order.get("Status") != "Pending":
+            current_status = order.get("Status", "")
+            logger.info(f"Current status of order {order_id}: '{current_status}'")
+            
+            # Check various possible status values (strip whitespace and normalize)
+            current_status_clean = str(current_status).strip().lower()
+            available_statuses = ["pending", "available", "open", ""]
+            
+            if current_status_clean not in available_statuses:
+                logger.info(f"Order {order_id} not available. Status: '{current_status}' (cleaned: '{current_status_clean}')")
                 await context.bot.send_message(
                     chat_id=user_id,
                     text="⚠️ Sorry, this job was already taken by another worker.\n⚠️ ስራው ቀድሞውና ተወስቷል።"
@@ -1330,7 +1386,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
                 
         except Exception as e:
-            logger.error(f"Job lock check error: {e}")
+            logger.error(f"Job lock check error: {e}", exc_info=True)
             await context.bot.send_message(
                 chat_id=user_id, 
                 text="⚠️ Job assignment failed. Please try again.\n⚠️ ስራ ማድረግ አልተሳካም። እንደገና ይሞክሩ።"
@@ -1348,19 +1404,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     worker_id_col = j
                     break
             
+            logger.info(f"Worker_ID column index: {worker_id_col}")
+            
             # Update worker ID
             if worker_id_col is not None:
                 worksheet.update_cell(row_idx, worker_id_col + 1, str(user_id))
+                logger.info(f"Updated Worker_ID at cell ({row_idx}, {worker_id_col + 1}) to {user_id}")
             else:
                 # If Worker_ID column not found, try column 7 (G) as fallback
                 worksheet.update_cell(row_idx, 7, str(user_id))
+                logger.info(f"Updated Worker_ID at cell ({row_idx}, 7) to {user_id}")
             
             # Update status to "Assigned"
             if status_col_idx is not None:
                 worksheet.update_cell(row_idx, status_col_idx + 1, "Assigned")
+                logger.info(f"Updated Status at cell ({row_idx}, {status_col_idx + 1}) to 'Assigned'")
             else:
                 # If Status column not found, try column 6 (F) as fallback
                 worksheet.update_cell(row_idx, 6, "Assigned")
+                logger.info(f"Updated Status at cell ({row_idx}, 6) to 'Assigned'")
             
             # Get worker info
             worker_info = None
@@ -1433,8 +1495,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=f"✅ A worker has accepted your job at {bureau}! They will check in soon.\n✅ በ{bureau} ያለውን ስራዎ ሠራተኛ ተቀብሏል! በቅርቡ ያገኙዎታል።"
             )
             
+            # Also update the message that the worker clicked on
+            try:
+                await query.edit_message_text(
+                    text=f"✅ You've accepted this job!\n📍 Bureau: {bureau}\n⏰ Please proceed to check-in.",
+                    reply_markup=None
+                )
+            except Exception as e:
+                logger.error(f"Error updating message: {e}")
+            
+            logger.info(f"Worker {user_id} successfully accepted order {order_id} at {bureau}")
+            
         except Exception as e:
-            logger.error(f"Accept error: {e}")
+            logger.error(f"Accept error: {e}", exc_info=True)
             await context.bot.send_message(
                 chat_id=user_id,
                 text="⚠️ Error accepting job. Please contact admin.\n⚠️ ስራ መቀበል ላይ ስህተት ተፈጥሯል። አስተዳዳሪውን ያነጋግሩ።"
@@ -1616,11 +1689,15 @@ def health():
 
 @flask_app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def telegram_webhook():
-    if request.method == "POST":
-        update = Update.de_json(request.get_json(force=True), application.bot)
-        application.update_queue.put_nowait(update)
-        return "OK"
-    return "Method not allowed", 405
+    """Telegram webhook endpoint."""
+    return "Webhook not configured", 200
+
+# ======================
+# SHUTDOWN HANDLER
+# ======================
+def signal_handler(signum, frame):
+    logger.info("Received shutdown signal. Cleaning up...")
+    sys.exit(0)
 
 # ======================
 # MAIN
@@ -1628,11 +1705,11 @@ def telegram_webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     webhook_url = os.getenv("WEBHOOK_URL")
-
-    # Initialize global loop
-    MAIN_LOOP = asyncio.new_event_loop()
-    asyncio.set_event_loop(MAIN_LOOP)
-
+    
+    # Set up signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
     # Build application
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
@@ -1641,11 +1718,38 @@ if __name__ == "__main__":
     application.add_handler(MessageHandler(filters.LOCATION, handle_location))
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_error_handler(error_handler)
-
+    
     # Start Flask in background thread
     flask_thread = Thread(target=lambda: flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False))
     flask_thread.daemon = True
     flask_thread.start()
-
-    # Start the bot
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    
+    logger.info("Starting bot...")
+    
+    try:
+        # Check if there's an existing bot instance by trying to get updates with a small timeout
+        # This helps detect if another instance is already running
+        import telegram
+        bot = telegram.Bot(token=BOT_TOKEN)
+        
+        try:
+            # Try to get updates with offset to clear any pending updates
+            updates = bot.get_updates(timeout=1, limit=1)
+            logger.info(f"Cleared {len(updates)} pending updates")
+        except Exception as e:
+            logger.warning(f"Could not clear updates: {e}")
+        
+        # Start the bot with polling
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            close_loop=False,  # Don't close the loop on stop
+            stop_signals=None  # Don't handle signals (we do it manually)
+        )
+        
+    except telegram.error.Conflict as e:
+        logger.error(f"Bot conflict error: {e}")
+        logger.error("Another bot instance is already running. Shutting down...")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Failed to start bot: {e}")
+        sys.exit(1)
