@@ -538,7 +538,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
         )
 
-    elif state == STATE_WORKER_ACCOUNT_H HOLDER:
+    elif state == STATE_WORKER_ACCOUNT_HOLDER:  # 👈 FIXED TYPO HERE
         data["account_holder"] = text
         USER_STATE[user_id] = {"state": STATE_WORKER_FYDA_FRONT, "data": data}
         await update.message.reply_text(
@@ -1144,7 +1144,7 @@ flask_app = Flask(__name__)
 def health():
     return jsonify({"status": "ok"})
 
-# 👇 FIXED WEBHOOK ROUTE FOR PYTHON-TELEGRAM-BOT V20+
+# 👇 FIXED WEBHOOK ROUTE
 @flask_app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def telegram_webhook():
     if request.method == "POST":
