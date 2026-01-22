@@ -428,7 +428,7 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     break
         except Exception as e:
-            logger.error(f"Check-in update error: {e})
+            logger.error(f"Check-in update error: {e}")
 
         await update.message.reply_text(get_msg("checkin_complete", "en"))
 
