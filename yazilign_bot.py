@@ -113,15 +113,15 @@ MESSAGES = {
     "worker_fyda_front": {"en": "📸 Send FRONT of your Fyda (ID):", "am": "📸 የፍይዳዎን (ID) ገጽ ፎቶ ይላኩ:"},
     "worker_fyda_back": {"en": "📸 Send BACK of your Fyda (ID):", "am": "📸 የፍይዳዎን (ID) ወለድ ፎቶ ይላኩ:"},
     "admin_approve_worker": {"en": "🆕 New worker registration!\nName: {name}\nPhone: {phone}\nApprove?", "am": "🆕 አዲስ የሰራተኛ ምዝገባ!\nስም፡ {name}\nስልክ፡ {phone}"},
-    "worker_approved": {"en": "✅ Approved! You’ll receive job alerts soon.", "am": "✅ ፀድቋል! በቅርቡ የስራ ማስታወቂያ ይደርስዎታል።"},
+    "worker_approved": {"en": "✅ Approved! You'll receive job alerts soon.", "am": "✅ ፀድቋል! በቅርቡ የስራ ማስታወቂያ ይደርስዎታል።"},
     "worker_declined": {"en": "❌ Declined. Contact admin for details.", "am": "❌ ውድቅ ተደርጓል። ለተጨማሪ መረጃ አስተዳዳሪውን ያነጋግሩ።"},
     "order_created": {"en": "✅ Order created! Searching for workers...", "am": "✅ ትዕዛዝ ተፈጥሯል! ሰራተኛ እየፈለግን ነው..."},
     "job_post": {"en": "📍 {bureau}\n🏙️ {city}\n💰 100 ETB/hour\n[Accept]", "am": "📍 {bureau}\n🏙️ {city}\n💰 በሰዓት 100 ብር\n[ተቀበል]"},
-    "worker_accepted": {"en": "✅ Worker accepted! They’ll check in soon.", "am": "✅ ሰራተኛ ተገኝቷል! በቅርቡ ያገኙዎታል።"},
+    "worker_accepted": {"en": "✅ Worker accepted! They'll check in soon.", "am": "✅ ሰራተኛ ተገኝቷል! በቅርቡ ያገኙዎታል።"},
     "checkin_photo": {"en": "📸 Send photo of yourself in line at {bureau}", "am": "📸 በ{bureau} ውስጥ ያለውን ፎቶ ይላኩ"},
     "checkin_location": {"en": "📍 Start live location sharing now", "am": "📍 አሁን የቀጥታ መገኛ ያጋሩ"},
     "checkin_complete": {"en": "✅ Check-in complete! Client notified.", "am": "✅ የመግቢያ ሂደት ተጠናቅቋል!"},
-    "location_off_alert": {"en": "⚠️ Worker’s location is off!", "am": "⚠️ የሰራተኛው መገኛ ጠፍቷል!"},
+    "location_off_alert": {"en": "⚠️ Worker's location is off!", "am": "⚠️ የሰራተኛው መገኛ ጠፍቷል!"},
     "turn_on_location": {"en": "Turn On Location", "am": "መገኛን አብራ"},
     "location_alert_sent": {"en": "🔔 Request sent. Worker will be notified to turn on location.", "am": "🔔 ጥያቄ ተልኳል። ሰራተኛው መገኛውን እንዲያበራ መልዕክት ይደርሰዋል።"},
     "final_hours": {"en": "How many hours did the worker wait? (Min 1, Max 12)", "am": "ለዚህ ሰራተኛ ምን ያህል ኮከብ ይሰጣሉ? (ከ1-5 ኮከቦች)"},
@@ -135,11 +135,11 @@ MESSAGES = {
     "worker_reassigned": {"en": "🔁 Job reopened. A new worker will be assigned soon.", "am": "🔁 ስራው በድጋሚ ክፍት ሆኗል። በቅርቡ ሌላ ሰራተኛ ይመደባል።"},
     "dispute_button": {"en": "⚠️ Dispute", "am": "⚠️ ቅሬታ"},
     "dispute_reason": {"en": "Select dispute reason:", "am": "የቅሬታ ምክንያቱን ይምረጡ፡"},
-    "reason_no_show": {"en": "Worker didn’t show", "am": "ሰራተኛው አልመጣም"},
+    "reason_no_show": {"en": "Worker didn't show", "am": "ሰራተኛው አልመጣም"},
     "reason_payment": {"en": "Payment issue", "am": "የክፍያ ችግር"},
     "reason_fake_photo": {"en": "Fake photo", "am": "ሀሰተኛ ፎቶ"},
     "dispute_submitted": {"en": "📄 Dispute submitted. Admin will review shortly.", "am": "📄 ቅሬታዎ ቀርቧል። አስተዳዳሪው በቅርቡ ይመለከተዋል።"},
-    "rate_worker": {"en": "How would you rate this worker? (1–5 stars)", "am": "ለዚህ ሰራተኛ ምን ያህል ኮከብ ይሰጣሉ? (ከ1-5 ኮከቦች)"},
+    "rate_worker": {"en": "How would you rate this worker? (1-5 stars)", "am": "ለዚህ ሰራተኛ ምን ያህል ኮከብ ይሰጣሉ? (ከ1-5 ኮከቦች)"},
     "rating_thanks": {"en": "Thank you! Your feedback helps us improve.", "am": "እናመሰግናለን! የእርስዎ አስተያየት አገልግሎታችንን ለማሻሻል ይረዳናል።"},
     "user_banned": {"en": "🚫 You are banned from using Yazilign. Contact admin for details.", "am": "🚫 ከያዝልኝ አገልግሎት ታግደዋል። ለዝርዝር መረጃ አስተዳዳሪውን ያነጋግሩ።"},
     "worker_far_warning": {"en": "⚠️ Worker moved >100m from job site!", "am": "⚠️ ሠራተኛው ከሥራ ቦታ በላይ 100ሜ ተንቀሳቅሷል!"},
@@ -1163,11 +1163,10 @@ if __name__ == "__main__":
     webhook_url = os.getenv("WEBHOOK_URL")
 
     # Initialize global loop
-    global MAIN_LOOP
     MAIN_LOOP = asyncio.new_event_loop()
     asyncio.set_event_loop(MAIN_LOOP)
 
-    # Build application BEFORE Flask starts
+    # Build application
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT, handle_message))
@@ -1176,26 +1175,10 @@ if __name__ == "__main__":
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_error_handler(error_handler)
 
-    # Initialize app and updater
-    MAIN_LOOP.run_until_complete(application.initialize())
-    MAIN_LOOP.run_until_complete(application.updater.start_polling())
-
-    # Set Telegram webhook
-    if webhook_url:
-        import requests
-        full_url = f"{webhook_url.rstrip('/')}/{BOT_TOKEN}"
-        resp = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={full_url}")
-        logger.info(f"Set webhook response: {resp.json()}")
-
     # Start Flask in background thread
     flask_thread = Thread(target=lambda: flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False))
     flask_thread.daemon = True
     flask_thread.start()
 
-    # Run event loop forever
-    try:
-        MAIN_LOOP.run_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        MAIN_LOOP.run_until_complete(application.shutdown())
+    # Start the bot
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
