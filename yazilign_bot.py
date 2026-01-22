@@ -3,6 +3,8 @@ import logging
 from datetime import datetime, timedelta
 from threading import Timer
 from uuid import uuid4
+import re
+from math import radians, sin, cos, sqrt, atan2
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -23,7 +25,6 @@ from telegram.ext import (
 )
 from flask import Flask, jsonify
 import asyncio
-import re
 
 # ======================
 # CONFIGURATION
@@ -53,12 +54,14 @@ ALL_CITIES = [
     "Bahir Dar", "Adama", "Jimma", "Dessie"
 ]
 
-# Fixed bank list
 BANKS = ["CBE", "Bank of Abyssinia"]
 
 HOURLY_RATE = 100
 COMMISSION_PERCENT = 0.25
 COMMISSION_TIMEOUT_HOURS = 3
+
+MAX_WARNING_DISTANCE = 100  # meters
+MAX_ALLOWED_DISTANCE = 500  # meters
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -138,7 +141,9 @@ MESSAGES = {
     "dispute_submitted": {"en": "📄 Dispute submitted. Admin will review shortly.", "am": "📄 ቅሬታዎ ቀርቧል። አስተዳዳሪው በቅርቡ ይመለከተዋል።"},
     "rate_worker": {"en": "How would you rate this worker? (1–5 stars)", "am": "ለዚህ ሰራተኛ ምን ያህል ኮከብ ይሰጣሉ? (ከ1-5 ኮከቦች)"},
     "rating_thanks": {"en": "Thank you! Your feedback helps us improve.", "am": "እናመሰግናለን! የእርስዎ አስተያየት አገልግሎታችንን ለማሻሻል ይረዳናል።"},
-    "user_banned": {"en": "🚫 You are banned from using Yazilign. Contact admin for details.", "am": "🚫 ከያዝልኝ አገልግሎት ታግደዋል። ለዝርዝር መረጃ አስተዳዳሪውን ያነጋግሩ።"}
+    "user_banned": {"en": "🚫 You are banned from using Yazilign. Contact admin for details.", "am": "🚫 ከያዝልኝ አገልግሎት ታግደዋል። ለዝርዝር መረጃ አስተዳዳሪውን ያነጋግሩ።"},
+    "worker_far_warning": {"en": "⚠️ Worker moved >100m from job site!", "am": "⚠️ ሠራተኛው ከሥራ ቦታ በላይ 100ሜ ተንቀሳቅሷል!"},
+    "worker_far_ban": {"en": "🚨 Worker moved >500m! Order cancelled & banned.", "am": "🚨 ሠራተኛው ከሥራ ቦታ በላይ 500ሜ ተንቀሳቅሷል! ትዕዛዝ ተሰርዟል እና ታግዷል።"}
 }
 
 def get_msg(key, **kwargs):
@@ -148,6 +153,19 @@ def get_msg(key, **kwargs):
         en_text = en_text.format(**kwargs)
         am_text = am_text.format(**kwargs)
     return f"{en_text}\n{am_text}"
+
+# ======================
+# LOCATION CALCULATION
+# ======================
+
+def calculate_distance(lat1, lon1, lat2, lon2):
+    R = 6371000
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+    return R * c
 
 # ======================
 # GOOGLE SHEETS
@@ -272,7 +290,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     USER_STATE[user_id] = {"state": STATE_NONE, "data": {}}
 
-    # 📜 LEGAL WELCOME MESSAGE
     legal_notice = (
         "ℹ️ **Yazilign Service Terms**\n\n"
         "• Workers are independent contractors\n"
@@ -304,7 +321,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     first_name = user.first_name or "User"
     username = user.username
 
-    # Ensure user exists
     get_or_create_user(user_id, first_name, username)
 
     if is_user_banned(user_id):
@@ -329,13 +345,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif text == "Worker":
-        # Check if existing worker
         try:
             worker_sheet = get_worksheet("Workers")
             records = worker_sheet.get_all_records()
             for record in records:
                 if str(record.get("Telegram_ID")) == str(user_id) and record.get("Status") == "Active":
-                    # Existing worker - skip registration
                     await update.message.reply_text(
                         "✅ Welcome back! You’re already registered as a worker.\n✅ እንኳን በደህና መጡ! እንደ ሠራተኛ ቀድሞውና ታዘጋለህ።"
                     )
@@ -343,12 +357,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Worker check error: {e}")
 
-        # New worker registration
         USER_STATE[user_id] = {"state": STATE_WORKER_NAME, "data": {}}
         await update.message.reply_text(get_msg("worker_welcome"))
 
     elif state == STATE_CLIENT_CITY:
-        # Validate city: text only, no numbers
         if re.search(r'\d', text):
             await update.message.reply_text(get_msg("invalid_city"))
             keyboard = [[city] for city in ALL_CITIES]
@@ -394,7 +406,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif state == STATE_WORKER_TELEBIRR:
         data["telebirr"] = text
         USER_STATE[user_id] = {"state": STATE_WORKER_BANK, "data": data}
-        # Fixed bank selection
         keyboard = [[bank] for bank in BANKS]
         await update.message.reply_text(
             "🏦 Select your bank:\n🏦 የባንክዎን ይምረጡ፡",
@@ -455,7 +466,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     first_name = user.first_name or "User"
     username = user.username
 
-    # Ensure user exists
     get_or_create_user(user_id, first_name, username)
 
     if is_user_banned(user_id):
@@ -475,22 +485,24 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["fyda_back"] = update.message.photo[-1].file_id
         USER_STATE[user_id]["data"] = data
 
+        # ✅ CRITICAL FIX: GET TELEGRAM ID DIRECTLY
+        worker_telegram_id = str(update.effective_user.id)
         worker_id = str(uuid4())[:8]
+
         try:
             sheet = get_worksheet("Workers")
             sheet.append_row([
                 worker_id,
                 data["name"],
                 data["phone"],
-                str(user_id),  # 👈 TELEGRAM USER ID SAVED CORRECTLY
-                "0",  # Rating
-                "0",  # Total_Earnings
-                "Pending",
+                worker_telegram_id,  # 👈 SAVED CORRECTLY
+                "0", "0", "Pending",
                 data.get("telebirr", ""),
                 data.get("bank_type", ""),
                 data.get("account_number", ""),
                 data.get("account_holder", "")
             ])
+            logger.info(f"✅ Worker registered: {worker_id}, Telegram ID: {worker_telegram_id}")
         except Exception as e:
             logger.error(f"Worker save error: {e}")
             await update.message.reply_text("⚠️ Failed to register. Try again.\n⚠️ ምዝገባ አልተሳካም።")
@@ -503,8 +515,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 photo=data["fyda_front"],
                 caption=caption,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user_id}_{worker_id}")],
-                    [InlineKeyboardButton("❌ Decline", callback_data=f"decline_{user_id}")]
+                    [InlineKeyboardButton("✅ Approve", callback_data=f"approve_{worker_telegram_id}_{worker_id}")],
+                    [InlineKeyboardButton("❌ Decline", callback_data=f"decline_{worker_telegram_id}")]
                 ])
             )
             await context.bot.send_photo(
@@ -595,7 +607,6 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     first_name = user.first_name or "User"
     username = user.username
 
-    # Ensure user exists
     get_or_create_user(user_id, first_name, username)
 
     if is_user_banned(user_id):
@@ -606,11 +617,7 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = state_info["state"]
     data = state_info["data"]
 
-    if not update.message:
-        return
-
-    if not update.message.location:
-        await update.message.reply_text("📍 Please share a valid live location.\n📍 የሚሰራ የቀጥታ መገኛ ያጋሩ።")
+    if not update.message or not update.message.location:
         return
 
     if state == STATE_CLIENT_LOCATION:
@@ -632,7 +639,9 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 str(HOURLY_RATE),
                 "No",
                 "0",
-                "Pending"
+                "Pending",
+                str(update.message.location.latitude),
+                str(update.message.location.longitude)
             ])
         except Exception as e:
             logger.error(f"Order create error: {e}")
@@ -643,7 +652,6 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✅ Order created! Searching for workers...\n✅ ትዕዛዝ ተፈጸመ! ሠራተኞች ተፈልተዋል..."
         )
 
-        # ✅ SEND JOB TO WORKER CHANNEL
         try:
             await context.bot.send_message(
                 chat_id=WORKER_CHANNEL_ID,
@@ -665,6 +673,7 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if record.get("Worker_ID") == str(user_id) and record.get("Status") == "Assigned":
                     sheet.update_cell(i, 6, "Checked In")
                     client_id = record.get("Client_TG_ID")
+                    
                     asyncio.run_coroutine_threadsafe(
                         context.bot.send_message(
                             chat_id=int(client_id),
@@ -672,6 +681,52 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         ),
                         context.application.updater.dispatcher.loop
                     )
+                    
+                    order_id = record.get("Order_ID")
+                    job_lat = float(record.get("Latitude", 0))
+                    job_lon = float(record.get("Longitude", 0))
+                    
+                    distance = calculate_distance(
+                        update.message.location.latitude,
+                        update.message.location.longitude,
+                        job_lat,
+                        job_lon
+                    )
+                    
+                    if distance > MAX_ALLOWED_DISTANCE:
+                        ban_user(user_id, f"Left job site (>500m)")
+                        sheet.update_cell(i, 6, "Cancelled")
+                        asyncio.run_coroutine_threadsafe(
+                            context.bot.send_message(
+                                chat_id=int(client_id),
+                                text=get_msg("worker_far_ban")
+                            ),
+                            context.application.updater.dispatcher.loop
+                        )
+                        asyncio.run_coroutine_threadsafe(
+                            context.bot.send_message(
+                                chat_id=user_id,
+                                text=get_msg("worker_far_ban")
+                            ),
+                            context.application.updater.dispatcher.loop
+                        )
+                        logger.info(f"Auto-banned worker {user_id} for moving {distance:.0f}m from job site")
+                    elif distance > MAX_WARNING_DISTANCE:
+                        asyncio.run_coroutine_threadsafe(
+                            context.bot.send_message(
+                                chat_id=int(client_id),
+                                text=get_msg("worker_far_warning")
+                            ),
+                            context.application.updater.dispatcher.loop
+                        )
+                        asyncio.run_coroutine_threadsafe(
+                            context.bot.send_message(
+                                chat_id=user_id,
+                                text=get_msg("worker_far_warning")
+                            ),
+                            context.application.updater.dispatcher.loop
+                        )
+                        logger.info(f"Warning: worker {user_id} moved {distance:.0f}m from job site")
                     break
         except Exception as e:
             logger.error(f"Check-in update error: {e}")
@@ -686,7 +741,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     first_name = user.first_name or "User"
     username = user.username
 
-    # Ensure user exists
     get_or_create_user(user_id, first_name, username)
 
     if is_user_banned(user_id):
@@ -701,21 +755,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("approve_"):
         parts = data.split("_")
-        worker_tg_id = int(parts[1])
+        worker_tg_id = parts[1]
+        worker_db_id = parts[2]
+        
         try:
             sheet = get_worksheet("Workers")
             records = sheet.get_all_records()
             for i, record in enumerate(records, start=2):
-                if str(record.get("Telegram_ID")) == str(worker_tg_id):
+                if str(record.get("Worker_ID")) == str(worker_db_id):
                     sheet.update_cell(i, 7, "Active")
                     break
         except Exception as e:
             logger.error(f"Approve error: {e}")
-        await context.bot.send_message(chat_id=worker_tg_id, text=get_msg("worker_approved"))
+        
+        try:
+            await context.bot.send_message(chat_id=int(worker_tg_id), text=get_msg("worker_approved"))
+        except Exception as e:
+            logger.error(f"Message worker error: {e}")
+        
         await query.edit_message_caption(caption="✅ Approved!\n✅ ተፈቅዶልናል!")
 
     elif data.startswith("decline_"):
-        worker_tg_id = int(data.split("_")[1])
+        worker_tg_id = data.split("_")[1]
         try:
             sheet = get_worksheet("Workers")
             records = sheet.get_all_records()
@@ -725,7 +786,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     break
         except Exception as e:
             logger.error(f"Decline error: {e}")
-        await context.bot.send_message(chat_id=worker_tg_id, text=get_msg("worker_declined"))
+        await context.bot.send_message(chat_id=int(worker_tg_id), text=get_msg("worker_declined"))
         await query.edit_message_caption(caption="❌ Declined.\n❌ ተውግዷል።")
 
     elif data.startswith("accept_"):
@@ -767,7 +828,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         text="💳 Pay 100 ETB to their Telebirr or bank, then upload payment receipt.\n💳 ለቴሌቢር ወይም ባንክ አካውንቱ 100 ብር ይላክሱ እና ሲምበር ያስገቡ።"
                     )
                     
-                    # Save worker ID to client state
                     if int(client_id) not in USER_STATE:
                         USER_STATE[int(client_id)] = {"state": STATE_NONE, "data": {}}
                     USER_STATE[int(client_id)]["state"] = STATE_CLIENT_BOOKING_RECEIPT
@@ -798,7 +858,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for i, record in enumerate(records, start=2):
                 if record.get("Client_TG_ID") == str(client_id) and record.get("Status") == "Pending":
                     sheet.update_cell(i, 6, "Verified")
-                    sheet.update_cell(i, 10, "Yes")  # Booking_Fee_Paid
+                    sheet.update_cell(i, 10, "Yes")
                     break
         except Exception as e:
             logger.error(f"Verify error: {e}")
