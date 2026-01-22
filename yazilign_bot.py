@@ -22,7 +22,6 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
     filters,
-    JobQueue,
 )
 from flask import Flask, jsonify, request
 import asyncio
@@ -379,6 +378,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ✅ UNIVERSAL CANCEL BUTTON
     if text == "↩️ Back to Main Menu" or text == "↩️ ወደ ዋና ገጽ":
         await start(update, context)
+        return
+
+    # 👇 HEALTH CHECK FOR RENDER
+    if text == "/health":
+        await update.message.reply_text("OK")
         return
 
     if text == "Client":
@@ -1228,8 +1232,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await context.bot.send_message(chat_id=client_id, text="✅ Payment verified! Job proceeding.\n✅ ክፍያ ተረጋግጧል! ስራ ተከዋል።")
         await query.edit_message_caption(caption="✅ Verified!\n✅ ተረጋግጧል!")
-
-    elif data.startswith("reject_"):
+        elif data.startswith("reject_"):
         client_id = int(data.split("_")[1])
         await context.bot.send_message(chat_id=client_id, text="❌ Payment rejected. Please resend correct receipt.\n❌ ክፍያ ተውግዷል። እባክዎን ትክክለኛ ሲምበር ይላኩ።")
         await query.edit_message_caption(caption="❌ Rejected.\n❌ ተውግዷል።")
@@ -1283,6 +1286,13 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
+    
+    # 👇 ADD THIS BLOCK TO AUTO-SET WEBHOOK AND PREVENT CONFLICT
+    if os.environ.get("WEBHOOK_URL"):
+        import requests
+        webhook_url = f"{os.environ['WEBHOOK_URL']}/{BOT_TOKEN}"
+        requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={webhook_url}")
+    
     from threading import Thread
     Thread(target=lambda: flask_app.run(host="0.0.0.0", port=port)).start()
 
@@ -1303,3 +1313,4 @@ if __name__ == "__main__":
         )
     else:
         application.run_polling()
+    
