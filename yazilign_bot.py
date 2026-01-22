@@ -68,8 +68,9 @@ USER_STATE = {}
     STATE_NONE, STATE_CLIENT_CITY, STATE_CLIENT_BUREAU, STATE_CLIENT_LOCATION,
     STATE_CLIENT_BOOKING_RECEIPT, STATE_CLIENT_FINAL_HOURS, STATE_CLIENT_FINAL_RECEIPT,
     STATE_WORKER_NAME, STATE_WORKER_PHONE, STATE_WORKER_FYDA,
+    STATE_WORKER_CHECKIN_PHOTO, STATE_WORKER_CHECKIN_LOCATION,
     STATE_DISPUTE_REASON, STATE_RATING
-) = range(12)
+) = range(15)
 
 # ======================
 # MESSAGES
@@ -92,6 +93,12 @@ MESSAGES = {
     "order_created": {"en": "✅ Order created! Searching for workers...", "am": "✅ ትዕዛዝ ተፈጸመ!"},
     "job_post": {"en": "📍 {bureau}\n🏙️ {city}\n💰 {rate} ETB/hour\n[Accept]", "am": "📍 {bureau}\n🏙️ {city}\n💰 {rate} ብር/ሰዓት\n[ቀበል]"},
     "worker_accepted": {"en": "✅ Worker accepted! They’ll check in soon.", "am": "✅ ሠራተኛ ተቀብሏል!"},
+    "checkin_photo": {"en": "📸 Send photo of yourself in line at {bureau}", "am": "📸 በ{bureau} ውስጥ ያለውን ፎቶ ይላኩ"},
+    "checkin_location": {"en": "📍 Start live location sharing now", "am": "📍 አሁን የቀጥታ መገኛ ያጋሩ"},
+    "checkin_complete": {"en": "✅ Check-in complete! Client notified.", "am": "✅ የመግቢያ ሂደት ተጠናቅቋል!"},
+    "location_off_alert": {"en": "⚠️ Worker’s location is off!", "am": "⚠️ የሰራተኛው መገኛ ጠፍቷል!"},
+    "turn_on_location": {"en": "Turn On Location", "am": "መገኛ አብራ"},
+    "location_alert_sent": {"en": "🔔 Request sent.", "am": "🔔 ጥያቄ ተልኳል።"},
     "final_hours": {"en": "How many hours did the worker wait? (Min 1, Max 12)", "am": "ሰራተኛው ስንት ሰዓት ጠብቷል? (ከ1-12)"},
     "final_payment": {"en": "💼 Pay {amount} ETB to worker and upload receipt.", "am": "💼 ለሰራተኛ {amount} ብር ይላክሱ እና ሲምበር ያስገቡ።"},
     "payment_complete": {"en": "✅ Payment confirmed! Thank you.", "am": "✅ ክፍያ ተረጋግጧል! እናመሰግናለን።"},
@@ -109,9 +116,6 @@ MESSAGES = {
     "dispute_submitted": {"en": "📄 Dispute submitted.", "am": "📄 ቅሬታ ቀርቧል።"},
     "rate_worker": {"en": "Rate worker (1–5 stars):", "am": "ኮከብ ይሰጡ (1-5):"},
     "rating_thanks": {"en": "Thank you!", "am": "እናመሰግናለን!"},
-    "location_off": {"en": "⚠️ Location off!", "am": "⚠️ መገኛ ጠፍቷል!"},
-    "turn_on_location": {"en": "Turn On Location", "am": "መገኛ አብራ"},
-    "location_alert_sent": {"en": "🔔 Request sent.", "am": "🔔 ጥያቄ ተልኳል።"},
     "user_banned": {"en": "🚫 Banned.", "am": "🚫 ታግደዋል።"}
 }
 
@@ -166,9 +170,10 @@ def update_worker_rating(worker_id, rating):
         for i, record in enumerate(records, start=2):
             if str(record.get("Worker_ID")) == str(worker_id):
                 current_rating = float(record.get("Rating", 0))
-                total_earnings = int(record.get("Total_Earnings", 0))
-                new_rating = (current_rating * total_earnings + rating) / (total_earnings + 1)
+                total_jobs = int(record.get("Total_Earnings", 0))  # Reusing as job count
+                new_rating = (current_rating * total_jobs + rating) / (total_jobs + 1)
                 sheet.update_cell(i, 5, str(new_rating))
+                sheet.update_cell(i, 6, str(total_jobs + 1))  # Increment job count
                 break
     except Exception as e:
         logger.error(f"Rating update error: {e}")
@@ -181,7 +186,6 @@ def start_commission_timer(application, order_id, worker_id, total_amount):
     commission = int(total_amount * COMMISSION_PERCENT)
     
     def final_action():
-        # Auto-ban after 3 hours if no proof
         ban_user(phone="unknown", tg_id=worker_id, reason="Missed commission")
         asyncio.run_coroutine_threadsafe(
             application.bot.send_message(
@@ -311,10 +315,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["fyda_back"] = photos[-2].file_id if len(photos) >= 2 else None
         USER_STATE[user_id]["data"] = data
 
+        worker_id = str(uuid4())[:8]
         try:
             sheet = get_worksheet("Workers")
             sheet.append_row([
-                str(uuid4())[:8], data["name"], data["phone"], str(user_id),
+                worker_id, data["name"], data["phone"], str(user_id),
                 "0", "0", "Pending"
             ])
         except Exception as e:
@@ -326,7 +331,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             photo=data["fyda_front"],
             caption=caption,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user_id}")],
+                [InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user_id}_{worker_id}")],
                 [InlineKeyboardButton("❌ Decline", callback_data=f"decline_{user_id}")]
             ])
         )
@@ -352,7 +357,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             chat_id=WORKER_CHANNEL_ID,
             text=get_msg("job_post", "en", bureau=data["bureau"], city=data["city"], rate=HOURLY_RATE),
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Accept", callback_data=f"accept_{order_id}")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Accept", callback_data=f"accept_{order_id}_{user_id}")]])
         )
         await update.message.reply_text(get_msg("order_created", lang))
 
@@ -384,15 +389,45 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         USER_STATE[user_id] = {"state": STATE_RATING, "data": {"worker_id": worker_id}, "lang": lang}
         await update.message.reply_text(get_msg("rate_worker", lang))
 
+    elif state == STATE_WORKER_CHECKIN_PHOTO:
+        data["checkin_photo"] = update.message.photo[-1].file_id
+        USER_STATE[user_id] = {"state": STATE_WORKER_CHECKIN_LOCATION, "data": data, "lang": "en"}
+        await update.message.reply_text(get_msg("checkin_location", "en"))
+
 async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     state_info = USER_STATE.get(user_id, {})
     state = state_info.get("state", STATE_NONE)
+    data = state_info.get("data", {})
+
     if state == STATE_CLIENT_LOCATION:
-        data = state_info["data"]
         data["location"] = (update.message.location.latitude, update.message.location.longitude)
         USER_STATE[user_id]["data"] = data
-        await update.message.reply_text(get_msg("booking_fee", state_info["lang"]))
+        await update.message.reply_text(get_msg("booking_fee", "en"))
+
+    elif state == STATE_WORKER_CHECKIN_LOCATION:
+        data["checkin_location"] = (update.message.location.latitude, update.message.location.longitude)
+        # Mark check-in complete
+        try:
+            sheet = get_worksheet("Orders")
+            records = sheet.get_all_records()
+            for i, record in enumerate(records, start=2):
+                if record.get("Worker_ID") == str(user_id) and record.get("Status") == "Assigned":
+                    sheet.update_cell(i, 6, "Checked In")
+                    client_id = record.get("Client_TG_ID")
+                    # Notify client
+                    asyncio.run_coroutine_threadsafe(
+                        context.bot.send_message(
+                            chat_id=int(client_id),
+                            text="✅ Worker checked in! Live location active."
+                        ),
+                        context.application.updater.dispatcher.loop
+                    )
+                    break
+        except Exception as e:
+            logger.error(f"Check-in update error: {e}")
+
+        await update.message.reply_text(get_msg("checkin_complete", "en"))
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -406,7 +441,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Cancelled.")
 
     elif data.startswith("approve_"):
-        worker_tg_id = int(data.split("_")[1])
+        parts = data.split("_")
+        worker_tg_id = int(parts[1])
+        worker_id = parts[2]
         try:
             sheet = get_worksheet("Workers")
             records = sheet.get_all_records()
@@ -434,7 +471,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_caption(caption="❌ Declined.")
 
     elif data.startswith("accept_"):
-        order_id = data.split("_")[1]
+        parts = data.split("_")
+        order_id = parts[1]
+        client_id = parts[2]
         try:
             sheet = get_worksheet("Orders")
             records = sheet.get_all_records()
@@ -444,32 +483,52 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     order = record
                     break
             if order:
-                # Assign worker
                 row_idx = records.index(order) + 2
                 sheet.update_cell(row_idx, 7, str(user_id))  # Worker_ID
                 sheet.update_cell(row_idx, 6, "Assigned")   # Status
 
                 # Notify client
                 await context.bot.send_message(
-                    chat_id=int(order["Client_TG_ID"]),
+                    chat_id=int(client_id),
                     text=get_msg("worker_accepted", "en")
                 )
-                # Ask for final hours after job done
-                USER_STATE[int(order["Client_TG_ID"])] = {
-                    "state": STATE_CLIENT_FINAL_HOURS,
-                    "data": {"order_id": order_id, "worker_id": str(user_id)},
+
+                # Tell worker to check in
+                bureau = order["Bureau_Name"]
+                USER_STATE[user_id] = {
+                    "state": STATE_WORKER_CHECKIN_PHOTO,
+                    "data": {"order_id": order_id, "bureau": bureau},
                     "lang": "en"
                 }
                 await context.bot.send_message(
-                    chat_id=int(order["Client_TG_ID"]),
-                    text=get_msg("final_hours", "en")
+                    chat_id=user_id,
+                    text=get_msg("checkin_photo", "en", bureau=bureau)
                 )
         except Exception as e:
             logger.error(f"Accept error: {e}")
 
     elif data.startswith("dispute_"):
-        # Handle dispute submission
-        pass  # Simplified for brevity
+        # Handle dispute
+        pass
+
+    elif data == "turn_on_location":
+        # Alert worker to re-enable location
+        order_id = USER_STATE[user_id]["data"].get("order_id")
+        if order_id:
+            try:
+                sheet = get_worksheet("Orders")
+                records = sheet.get_all_records()
+                for record in records:
+                    if record.get("Order_ID") == order_id:
+                        worker_id = record.get("Worker_ID")
+                        await context.bot.send_message(
+                            chat_id=int(worker_id),
+                            text="🔔 Client requested live location. Please turn it on now."
+                        )
+                        await query.message.reply_text(get_msg("location_alert_sent", "en"))
+                        break
+            except Exception as e:
+                logger.error(f"Location alert error: {e}")
 
 # ======================
 # FLASK / HEALTH
