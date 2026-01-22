@@ -1,7 +1,7 @@
 import os
 import logging
 from datetime import datetime, timedelta
-from threading import Timer
+from threading import Timer, Thread
 from uuid import uuid4
 import re
 from math import radians, sin, cos, sqrt, atan2
@@ -22,11 +22,9 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from flask import Flask, jsonify, request
 import asyncio
 
-# ======================
-# CONFIGURATION
-# ======================
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN_MAIN")
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID"))
 SHEET_ID = os.getenv("SHEET_ID")
@@ -60,9 +58,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 USER_STATE = {}
 
-# ======================
-# USER STATES
-# ======================
 STATE_NONE = 0
 STATE_CLIENT_CITY = 1
 STATE_CLIENT_BUREAU = 2
@@ -95,9 +90,6 @@ STATE_WORKER_AT_FRONT = 28
 STATE_CLIENT_CONFIRM_ARRIVAL = 29
 STATE_WORKER_ACTIVE_JOB = 30
 
-# ======================
-# MESSAGES
-# ======================
 MESSAGES = {
     "start": {"en": "Welcome! Are you a Client, Worker, or Admin?", "am": "እንኳን በደህና መጡ!"},
     "cancel": {"en": "↩️ Back to Main Menu", "am": "↩️ ወደ ዋና ገጽ"},
@@ -153,9 +145,6 @@ def get_msg(key, **kwargs):
         am_text = am_text.format(**kwargs)
     return f"{en_text}\n{am_text}"
 
-# ======================
-# LOCATION CALCULATION
-# ======================
 def calculate_distance(lat1, lon1, lat2, lon2):
     R = 6371000
     lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
@@ -165,9 +154,6 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     c = 2 * atan2(sqrt(a), sqrt(1-a))
     return R * c
 
-# ======================
-# GOOGLE SHEETS
-# ======================
 def get_sheet_client():
     creds = ServiceAccountCredentials.from_json_keyfile_dict(
         GOOGLE_CREDS,
@@ -220,7 +206,7 @@ def get_or_create_user(user_id, first_name, username, role=None):
             str(user_id),
             first_name,
             username or "",
-            "",  # Phone_Number
+            "",
             role or "Client",
             "Active",
             now,
@@ -246,9 +232,6 @@ def update_worker_rating(worker_id, rating):
     except Exception as e:
         logger.error(f"Rating update error: {e}")
 
-# ======================
-# COMMISSION TIMER
-# ======================
 def start_commission_timer(application, order_id, worker_id, total_amount):
     commission = int(total_amount * COMMISSION_PERCENT)
     def final_action():
@@ -262,9 +245,6 @@ def start_commission_timer(application, order_id, worker_id, total_amount):
         )
     Timer(COMMISSION_TIMEOUT_HOURS * 3600, final_action).start()
 
-# ======================
-# LOCATION MONITOR
-# ======================
 async def check_worker_location(context: ContextTypes.DEFAULT_TYPE):
     job = context.job
     worker_id = job.data["worker_id"]
@@ -291,9 +271,6 @@ async def check_worker_location(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Location ping error: {e}")
 
-# ======================
-# TELEGRAM HANDLERS
-# ======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
@@ -345,6 +322,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = state_info["data"]
     if text == "↩️ Back to Main Menu" or text == "↩️ ወደ ዋና ገጽ":
         await start(update, context)
+        return
+    if text == "/health":
+        await update.message.reply_text("OK")
         return
     if text == "Client":
         USER_STATE[user_id] = {"state": STATE_CLIENT_CITY, "data": {}}
@@ -1123,15 +1103,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Location alert error: {e}")
 
-# ======================
-# ERROR HANDLER
-# ======================
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Exception while handling an update:", exc_info=context.error)
 
-# ======================
-# MAIN
-# ======================
+flask_app = Flask(__name__)
+
+@flask_app.route("/health")
+def health():
+    return jsonify({"status": "ok"})
+
+@flask_app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def telegram_webhook():
+    if request.method == "POST":
+        update = Update.de_json(request.get_json(force=True), application.bot)
+        asyncio.run_coroutine_threadsafe(
+            application.update_queue.put(update),
+            application.loop
+        )
+        return "OK"
+    return "Method not allowed", 405
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     webhook_url = os.getenv("WEBHOOK_URL")
@@ -1144,16 +1135,15 @@ if __name__ == "__main__":
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_error_handler(error_handler)
 
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(application.initialize())
+    loop.run_until_complete(application.updater.start_polling())
+
     if webhook_url:
-        # Clean up any old webhook first
         import requests
-        requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
-        # Set new webhook and run
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            webhook_url=f"{webhook_url}/{BOT_TOKEN}",
-            secret_token=None
-        )
-    else:
-        application.run_polling()
+        full_url = f"{webhook_url.rstrip('/')}/{BOT_TOKEN}"
+        resp = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={full_url}")
+        logger.info(f"Set webhook response: {resp.json()}")
+
+    flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
