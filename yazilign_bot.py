@@ -23,6 +23,7 @@ from telegram.ext import (
 )
 from flask import Flask, jsonify
 import asyncio
+import re
 
 # ======================
 # CONFIGURATION
@@ -52,6 +53,9 @@ ALL_CITIES = [
     "Bahir Dar", "Adama", "Jimma", "Dessie"
 ]
 
+# Fixed bank list
+BANKS = ["CBE", "Bank of Abyssinia"]
+
 HOURLY_RATE = 100
 COMMISSION_PERCENT = 0.25
 COMMISSION_TIMEOUT_HOURS = 3
@@ -77,7 +81,7 @@ STATE_CLIENT_FINAL_RECEIPT = 6
 STATE_WORKER_NAME = 7
 STATE_WORKER_PHONE = 8
 STATE_WORKER_TELEBIRR = 9
-STATE_WORKER_BANK_TYPE = 10
+STATE_WORKER_BANK = 10
 STATE_WORKER_ACCOUNT_NUMBER = 11
 STATE_WORKER_ACCOUNT_HOLDER = 12
 STATE_WORKER_FYDA_FRONT = 13
@@ -97,6 +101,7 @@ MESSAGES = {
     "cancel": {"en": "↩️ Cancel", "am": "↩️ ሰርዝ"},
     "choose_city": {"en": "📍 Choose city:", "am": "📍 ከተማ ይምረጡ፡"},
     "city_not_active": {"en": "🚧 Not in {city} yet. Choose Addis Ababa.", "am": "🚧 በ{city} አይሰራም። አዲስ አበባ ይምረጡ።"},
+    "invalid_city": {"en": "⚠️ City name must be text only (no numbers). Please re-enter.", "am": "⚠️ ከተማ ስሙ ፊደል ብቻ መሆን አለበት (ቁጥር ያልተካተተ)። እንደገና ይፃፉ።"},
     "enter_bureau": {"en": "📍 Type bureau name:", "am": "📍 የቢሮ ስሙን ይፃፉ:"},
     "send_location": {"en": "📍 Share live location:", "am": "📍 ቦታዎን ያጋሩ:"},
     "booking_fee": {"en": "Pay 100 ETB and upload receipt.", "am": "100 ብር ይላክሱ እና ሲምበር ያስገቡ።"},
@@ -324,13 +329,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif text == "Worker":
-        if is_user_banned(user_id):
-            await update.message.reply_text(get_msg("user_banned"))
-            return
+        # Check if existing worker
+        try:
+            worker_sheet = get_worksheet("Workers")
+            records = worker_sheet.get_all_records()
+            for record in records:
+                if str(record.get("Telegram_ID")) == str(user_id) and record.get("Status") == "Active":
+                    # Existing worker - skip registration
+                    await update.message.reply_text(
+                        "✅ Welcome back! You’re already registered as a worker.\n✅ እንኳን በደህና መጡ! እንደ ሠራተኛ ቀድሞውና ታዘጋለህ።"
+                    )
+                    return
+        except Exception as e:
+            logger.error(f"Worker check error: {e}")
+
+        # New worker registration
         USER_STATE[user_id] = {"state": STATE_WORKER_NAME, "data": {}}
         await update.message.reply_text(get_msg("worker_welcome"))
 
     elif state == STATE_CLIENT_CITY:
+        # Validate city: text only, no numbers
+        if re.search(r'\d', text):
+            await update.message.reply_text(get_msg("invalid_city"))
+            keyboard = [[city] for city in ALL_CITIES]
+            await update.message.reply_text(
+                get_msg("choose_city"),
+                reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+            )
+            return
+
         if text not in ACTIVE_CITIES:
             await update.message.reply_text(get_msg("city_not_active", city=text))
             keyboard = [[city] for city in ALL_CITIES]
@@ -366,10 +393,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif state == STATE_WORKER_TELEBIRR:
         data["telebirr"] = text
-        USER_STATE[user_id] = {"state": STATE_WORKER_BANK_TYPE, "data": data}
-        await update.message.reply_text("🏦 Enter your bank type (e.g., CBE, Awash, Dashen):\n🏦 የባንክ አይነትዎን ይፃፉ (ለምሳሌ፡ CBE, Awash, Dashen):")
+        USER_STATE[user_id] = {"state": STATE_WORKER_BANK, "data": data}
+        # Fixed bank selection
+        keyboard = [[bank] for bank in BANKS]
+        await update.message.reply_text(
+            "🏦 Select your bank:\n🏦 የባንክዎን ይምረጡ፡",
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+        )
 
-    elif state == STATE_WORKER_BANK_TYPE:
+    elif state == STATE_WORKER_BANK:
+        if text not in BANKS:
+            keyboard = [[bank] for bank in BANKS]
+            await update.message.reply_text(
+                "⚠️ Please select from the bank list.\n⚠️ ከባንክ ዝርዝሩ ይምረጡ።",
+                reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+            )
+            return
         data["bank_type"] = text
         USER_STATE[user_id] = {"state": STATE_WORKER_ACCOUNT_NUMBER, "data": data}
         await update.message.reply_text("🔢 Enter your account number:\n🔢 የአካውንት ቁጥርዎን ይፃፉ፡")
@@ -443,7 +482,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 worker_id,
                 data["name"],
                 data["phone"],
-                str(user_id),  # 👈 TELEGRAM USER ID SAVED HERE
+                str(user_id),  # 👈 TELEGRAM USER ID SAVED CORRECTLY
                 "0",  # Rating
                 "0",  # Total_Earnings
                 "Pending",
@@ -604,13 +643,18 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✅ Order created! Searching for workers...\n✅ ትዕዛዝ ተፈጸመ! ሠራተኞች ተፈልተዋል..."
         )
 
-        await context.bot.send_message(
-            chat_id=WORKER_CHANNEL_ID,
-            text=get_msg("job_post", bureau=data["bureau"], city=data["city"], rate=HOURLY_RATE),
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Accept", callback_data=f"accept_{order_id}_{user_id}")]
-            ])
-        )
+        # ✅ SEND JOB TO WORKER CHANNEL
+        try:
+            await context.bot.send_message(
+                chat_id=WORKER_CHANNEL_ID,
+                text=get_msg("job_post", bureau=data["bureau"], city=data["city"], rate=HOURLY_RATE),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Accept", callback_data=f"accept_{order_id}_{user_id}")]
+                ])
+            )
+        except Exception as e:
+            logger.error(f"Job broadcast error: {e}")
+            await update.message.reply_text("⚠️ Failed to notify workers. Try again.\n⚠️ ሠራተኞች ማሳወቅ አልተሳካም።")
 
     elif state == STATE_WORKER_CHECKIN_LOCATION:
         data["checkin_location"] = (update.message.location.latitude, update.message.location.longitude)
