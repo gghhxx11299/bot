@@ -1175,7 +1175,7 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     webhook_url = os.getenv("WEBHOOK_URL")
 
-    # Build application
+    # Build the application
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT, handle_message))
@@ -1185,19 +1185,35 @@ if __name__ == "__main__":
     application.add_error_handler(error_handler)
 
     if webhook_url:
-        # Set webhook once
+        # Set Telegram webhook once
         full_webhook = f"{webhook_url.rstrip('/')}/{BOT_TOKEN}"
         import requests
-        requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={full_webhook}")
-        logger.info(f"Webhook set to: {full_webhook}")
+        resp = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={full_webhook}")
+        logger.info(f"Webhook set response: {resp.json()}")
 
         # Start Flask in background thread
         from threading import Thread
-        Thread(target=lambda: flask_app.run(host="0.0.0.0", port=port, debug=False)).start()
+        flask_thread = Thread(target=lambda: flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False))
+        flask_thread.daemon = True
+        flask_thread.start()
 
-        # Initialize app so update_queue works
-        application.initialize()
-        application.updater.start_webhook()  # activates queue without server
+        # Initialize the application and start the updater WITHOUT a server
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        async def run_bot():
+            await application.initialize()
+            await application.updater.start_polling()  # or start_webhook() without listen/port
+            # Keep the bot running
+            await asyncio.Event().wait()
+
+        try:
+            loop.run_until_complete(run_bot())
+        except KeyboardInterrupt:
+            pass
+        finally:
+            loop.run_until_complete(application.shutdown())
     else:
-        # Local development
+        # Local development: use polling
         application.run_polling()
