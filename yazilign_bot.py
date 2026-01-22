@@ -177,8 +177,50 @@ def get_sheet_client():
     return gspread.authorize(creds)
 
 def get_worksheet(sheet_name):
-    client = get_sheet_client()
-    return client.open_by_key(SHEET_ID).worksheet(sheet_name)
+    """Get worksheet with handling for duplicate headers."""
+    try:
+        client = get_sheet_client()
+        worksheet = client.open_by_key(SHEET_ID).worksheet(sheet_name)
+        return worksheet
+    except Exception as e:
+        logger.error(f"Error getting worksheet '{sheet_name}': {e}")
+        raise
+
+def get_worksheet_data(sheet_name):
+    """Get worksheet data as list of dictionaries, handling duplicate headers."""
+    try:
+        worksheet = get_worksheet(sheet_name)
+        all_values = worksheet.get_all_values()
+        
+        if not all_values:
+            return []
+        
+        headers = all_values[0]
+        data = []
+        
+        for row in all_values[1:]:
+            row_dict = {}
+            for i, header in enumerate(headers):
+                if i < len(row):
+                    row_dict[header] = row[i]
+                else:
+                    row_dict[header] = ""
+            data.append(row_dict)
+        
+        return data
+    except Exception as e:
+        logger.error(f"Error getting worksheet data '{sheet_name}': {e}")
+        return []
+
+def update_worksheet_cell(sheet_name, row, col, value):
+    """Update a cell in worksheet."""
+    try:
+        worksheet = get_worksheet(sheet_name)
+        worksheet.update_cell(row, col, value)
+        return True
+    except Exception as e:
+        logger.error(f"Error updating cell in '{sheet_name}': {e}")
+        return False
 
 def log_to_history(user_id, role, action, details=""):
     try:
@@ -189,8 +231,7 @@ def log_to_history(user_id, role, action, details=""):
 
 def is_user_banned(user_id):
     try:
-        sheet = get_worksheet("Users")
-        records = sheet.get_all_records()
+        records = get_worksheet_data("Users")
         for r in records:
             if str(r.get("User_ID")) == str(user_id) and r.get("Status") == "Banned":
                 return True
@@ -200,24 +241,43 @@ def is_user_banned(user_id):
 
 def ban_user(user_id, reason=""):
     try:
-        sheet = get_worksheet("Users")
-        records = sheet.get_all_records()
-        for i, record in enumerate(records, start=2):
-            if str(record.get("User_ID")) == str(user_id):
-                sheet.update_cell(i, 6, "Banned")
+        worksheet = get_worksheet("Users")
+        all_values = worksheet.get_all_values()
+        
+        if not all_values:
+            return
+        
+        headers = all_values[0]
+        
+        for i, row in enumerate(all_values[1:], start=2):
+            if len(row) > 0 and str(row[0]) == str(user_id):
+                # Find Status column
+                for j, header in enumerate(headers):
+                    if header == "Status":
+                        if j < len(row):
+                            worksheet.update_cell(i, j + 1, "Banned")
+                        else:
+                            # If column doesn't exist in this row, extend it
+                            if j >= len(row):
+                                for _ in range(j - len(row) + 1):
+                                    row.append("")
+                            worksheet.update(f"{chr(65+j)}{i}", "Banned")
+                        break
                 break
     except Exception as e:
         logger.error(f"Ban error: {e}")
 
 def get_or_create_user(user_id, first_name, username, role=None):
     try:
-        sheet = get_worksheet("Users")
-        records = sheet.get_all_records()
+        records = get_worksheet_data("Users")
         for r in records:
             if str(r.get("User_ID")) == str(user_id):
                 return r
+        
+        # User not found, create new
+        worksheet = get_worksheet("Users")
         now = str(datetime.now())
-        sheet.append_row([
+        worksheet.append_row([
             str(user_id),
             first_name,
             username or "",
@@ -234,15 +294,38 @@ def get_or_create_user(user_id, first_name, username, role=None):
 
 def update_worker_rating(worker_id, rating):
     try:
-        sheet = get_worksheet("Workers")
-        records = sheet.get_all_records()
-        for i, record in enumerate(records, start=2):
-            if str(record.get("Worker_ID")) == str(worker_id):
-                current_rating = float(record.get("Rating", 0))
-                total_jobs = int(record.get("Total_Earnings", 0)) or 1
-                new_rating = (current_rating * total_jobs + rating) / (total_jobs + 1)
-                sheet.update_cell(i, 5, str(new_rating))
-                sheet.update_cell(i, 6, str(total_jobs + 1))
+        worksheet = get_worksheet("Workers")
+        all_values = worksheet.get_all_values()
+        
+        if not all_values or len(all_values) < 2:
+            return
+        
+        headers = all_values[0]
+        
+        for i, row in enumerate(all_values[1:], start=2):
+            if len(row) > 0 and str(row[0]) == str(worker_id):
+                # Find Rating and Total_Earnings columns
+                rating_col = None
+                earnings_col = None
+                
+                for j, header in enumerate(headers):
+                    if header == "Rating":
+                        rating_col = j
+                    elif header == "Total_Earnings":
+                        earnings_col = j
+                
+                if rating_col is not None and earnings_col is not None:
+                    # Get current values
+                    current_rating = float(row[rating_col]) if rating_col < len(row) and row[rating_col] else 0
+                    current_earnings = int(row[earnings_col]) if earnings_col < len(row) and row[earnings_col] else 0
+                    
+                    # Calculate new rating
+                    total_jobs = current_earnings or 1
+                    new_rating = (current_rating * total_jobs + rating) / (total_jobs + 1)
+                    
+                    # Update cells
+                    worksheet.update_cell(i, rating_col + 1, str(new_rating))
+                    worksheet.update_cell(i, earnings_col + 1, str(total_jobs + 1))
                 break
     except Exception as e:
         logger.error(f"Rating update error: {e}")
@@ -276,10 +359,9 @@ async def check_worker_location(context: ContextTypes.DEFAULT_TYPE):
     worker_id = job.data["worker_id"]
     order_id = job.data["order_id"]
     try:
-        order_sheet = get_worksheet("Orders")
-        order_records = order_sheet.get_all_records()
+        orders = get_worksheet_data("Orders")
         order = None
-        for rec in order_records:
+        for rec in orders:
             if rec.get("Order_ID") == order_id:
                 order = rec
                 break
@@ -383,22 +465,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         elif text == "🔑 Login as Existing Worker":
             try:
-                worker_sheet = get_worksheet("Workers")
-                records = worker_sheet.get_all_records()
                 worker_info = None
+                records = get_worksheet_data("Workers")
                 for record in records:
                     if str(record.get("Telegram_ID")) == str(user_id) and record.get("Status") == "Active":
                         worker_info = record
                         break
                 if worker_info:
+                    account_number = str(worker_info.get("Account_number", ""))
+                    last_four = account_number[-4:] if len(account_number) >= 4 else account_number
                     dashboard_text = (
                         f"👷‍♂️ **Worker Dashboard**\n"
-                        f"Name: {worker_info['Full_Name']}\n"
-                        f"Total Earnings: {worker_info['Total_Earnings']} ETB\n"
-                        f"Completed Jobs: {worker_info['Total_Earnings']} jobs\n"
-                        f"Rating: {worker_info['Rating'] or 'N/A'} ⭐\n"
-                        f"Telebirr: {worker_info['Telebirr_number']}\n"
-                        f"Bank: {worker_info['Bank_type']} ••••{str(worker_info['Account_number'])[-4:]}\n"
+                        f"Name: {worker_info.get('Full_Name', 'N/A')}\n"
+                        f"Total Earnings: {worker_info.get('Total_Earnings', '0')} ETB\n"
+                        f"Completed Jobs: {worker_info.get('Total_Earnings', '0')} jobs\n"
+                        f"Rating: {worker_info.get('Rating', 'N/A')} ⭐\n"
+                        f"Telebirr: {worker_info.get('Telebirr_number', 'N/A')}\n"
+                        f"Bank: {worker_info.get('Bank_type', 'N/A')} ••••{last_four}\n"
                         f"Choose an option:"
                     )
                     keyboard = [
@@ -438,7 +521,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             USER_STATE[user_id] = {"state": STATE_WORKER_UPDATE_PHONE, "data": worker_info}
         elif text == "📊 View Earnings":
-            total_earnings = int(worker_info['Total_Earnings'])
+            total_earnings = int(worker_info.get('Total_Earnings', 0))
             commission_paid = int(total_earnings * 0.25)
             net_income = total_earnings - commission_paid
             earnings_text = (
@@ -601,12 +684,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     elif state == STATE_WORKER_UPDATE_PHONE:
         try:
-            sheet = get_worksheet("Workers")
-            records = sheet.get_all_records()
-            for i, record in enumerate(records, start=2):
-                if str(record.get("Telegram_ID")) == str(user_id):
-                    sheet.update_cell(i, 3, text)
+            worksheet = get_worksheet("Workers")
+            all_values = worksheet.get_all_values()
+            
+            if not all_values:
+                await update.message.reply_text("⚠️ Failed to update. Try again.\n⚠️ ማሻሻል አልተሳካም።")
+                return
+            
+            headers = all_values[0]
+            phone_col = None
+            
+            # Find phone column
+            for j, header in enumerate(headers):
+                if header == "Phone_Number":
+                    phone_col = j
                     break
+            
+            if phone_col is None:
+                await update.message.reply_text("⚠️ Phone column not found.\n⚠️ የስልክ አምድ አልተገኘም።")
+                return
+            
+            # Update phone for the worker
+            for i, row in enumerate(all_values[1:], start=2):
+                if len(row) > 0 and str(row[3]) == str(user_id):  # Telegram_ID is usually column D (index 3)
+                    worksheet.update_cell(i, phone_col + 1, text)
+                    break
+            
             await update.message.reply_text("✅ Phone updated!\n✅ ስልክ ቁጥር ተሻሽሏል!")
             await start(update, context)
         except Exception as e:
@@ -614,12 +717,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ Failed to update. Try again.\n⚠️ ማሻሻል አልተሳካም።")
     elif state == STATE_WORKER_UPDATE_TELEBIRR:
         try:
-            sheet = get_worksheet("Workers")
-            records = sheet.get_all_records()
-            for i, record in enumerate(records, start=2):
-                if str(record.get("Telegram_ID")) == str(user_id):
-                    sheet.update_cell(i, 8, text)
+            worksheet = get_worksheet("Workers")
+            all_values = worksheet.get_all_values()
+            
+            if not all_values:
+                await update.message.reply_text("⚠️ Failed to update. Try again.\n⚠️ ማሻሻል አልተሳካም።")
+                return
+            
+            headers = all_values[0]
+            telebirr_col = None
+            
+            # Find Telebirr column
+            for j, header in enumerate(headers):
+                if header == "Telebirr_number":
+                    telebirr_col = j
                     break
+            
+            if telebirr_col is None:
+                await update.message.reply_text("⚠️ Telebirr column not found.\n⚠️ ቴሌቢር አምድ አልተገኘም።")
+                return
+            
+            # Update Telebirr for the worker
+            for i, row in enumerate(all_values[1:], start=2):
+                if len(row) > 0 and str(row[3]) == str(user_id):  # Telegram_ID is usually column D (index 3)
+                    worksheet.update_cell(i, telebirr_col + 1, text)
+                    break
+            
             await update.message.reply_text("✅ Telebirr updated!\n✅ ቴሌቢር ተሻሽሏል!")
             await start(update, context)
         except Exception as e:
@@ -635,12 +758,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         try:
-            sheet = get_worksheet("Workers")
-            records = sheet.get_all_records()
-            for i, record in enumerate(records, start=2):
-                if str(record.get("Telegram_ID")) == str(user_id):
-                    sheet.update_cell(i, 9, text)
+            worksheet = get_worksheet("Workers")
+            all_values = worksheet.get_all_values()
+            
+            if not all_values:
+                await update.message.reply_text("⚠️ Failed to update. Try again.\n⚠️ ማሻሻል አልተሳካም።")
+                return
+            
+            headers = all_values[0]
+            bank_col = None
+            
+            # Find bank column
+            for j, header in enumerate(headers):
+                if header == "Bank_type":
+                    bank_col = j
                     break
+            
+            if bank_col is None:
+                await update.message.reply_text("⚠️ Bank column not found.\n⚠️ ባንክ አምድ አልተገኘም።")
+                return
+            
+            # Update bank for the worker
+            for i, row in enumerate(all_values[1:], start=2):
+                if len(row) > 0 and str(row[3]) == str(user_id):  # Telegram_ID is usually column D (index 3)
+                    worksheet.update_cell(i, bank_col + 1, text)
+                    break
+            
             await update.message.reply_text("✅ Bank updated!\n✅ ባንክ ተሻሽሏል!")
             await start(update, context)
         except Exception as e:
@@ -648,12 +791,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ Failed to update. Try again.\n⚠️ ማሻሻል አልተሳካም።")
     elif state == STATE_WORKER_UPDATE_ACCOUNT:
         try:
-            sheet = get_worksheet("Workers")
-            records = sheet.get_all_records()
-            for i, record in enumerate(records, start=2):
-                if str(record.get("Telegram_ID")) == str(user_id):
-                    sheet.update_cell(i, 10, text)
+            worksheet = get_worksheet("Workers")
+            all_values = worksheet.get_all_values()
+            
+            if not all_values:
+                await update.message.reply_text("⚠️ Failed to update. Try again.\n⚠️ ማሻሻል አልተሳካም።")
+                return
+            
+            headers = all_values[0]
+            account_col = None
+            
+            # Find account column
+            for j, header in enumerate(headers):
+                if header == "Account_number":
+                    account_col = j
                     break
+            
+            if account_col is None:
+                await update.message.reply_text("⚠️ Account column not found.\n⚠️ አካውንት አምድ አልተገኘም።")
+                return
+            
+            # Update account for the worker
+            for i, row in enumerate(all_values[1:], start=2):
+                if len(row) > 0 and str(row[3]) == str(user_id):  # Telegram_ID is usually column D (index 3)
+                    worksheet.update_cell(i, account_col + 1, text)
+                    break
+            
             await update.message.reply_text("✅ Account updated!\n✅ አካውንት ተሻሽሏል!")
             await start(update, context)
         except Exception as e:
@@ -669,9 +832,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == "✅ I'm at the front of the line":
             order_id = data["order_id"]
             try:
-                order_sheet = get_worksheet("Orders")
-                records = order_sheet.get_all_records()
-                for rec in records:
+                orders = get_worksheet_data("Orders")
+                for rec in orders:
                     if rec.get("Order_ID") == order_id:
                         client_id = rec.get("Client_TG_ID")
                         await context.bot.send_message(
@@ -694,14 +856,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             order_id = data["order_id"]
             worker_id = data["worker_id"]
             try:
-                sheet = get_worksheet("Orders")
-                records = sheet.get_all_records()
-                for i, rec in enumerate(records, start=2):
-                    if rec.get("Order_ID") == order_id:
-                        sheet.update_cell(i, 6, "Arrived")
+                worksheet = get_worksheet("Orders")
+                all_values = worksheet.get_all_values()
+                
+                if not all_values:
+                    await update.message.reply_text("⚠️ Error updating order.\n⚠️ ትዕዛዝ ማሻሻል ላይ ስህተት።")
+                    return
+                
+                headers = all_values[0]
+                status_col = None
+                
+                # Find status column
+                for j, header in enumerate(headers):
+                    if header == "Status":
+                        status_col = j
+                        break
+                
+                if status_col is None:
+                    await update.message.reply_text("⚠️ Status column not found.\n⚠️ ሁኔታ አምድ አልተገኘም።")
+                    return
+                
+                # Update status for the order
+                for i, row in enumerate(all_values[1:], start=2):
+                    if len(row) > 0 and row[0] == order_id:  # Order_ID is column A (index 0)
+                        worksheet.update_cell(i, status_col + 1, "Arrived")
                         break
             except Exception as e:
                 logger.error(f"Arrival update error: {e}")
+            
             await update.message.reply_text(get_msg("final_hours"))
             USER_STATE[user_id] = {
                 "state": STATE_CLIENT_FINAL_HOURS,
@@ -731,11 +913,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         worker_telegram_id = str(update.effective_user.id)
         worker_id = str(uuid4())[:8]
         try:
-            sheet = get_worksheet("Workers")
-            sheet.append_row([
+            worksheet = get_worksheet("Workers")
+            worksheet.append_row([
                 worker_id,
-                data["name"],
-                data["phone"],
+                data.get("name", ""),
+                data.get("phone", ""),
                 worker_telegram_id,
                 "0", "0", "Pending",
                 data.get("telebirr", ""),
@@ -748,7 +930,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Worker save error: {e}")
             await update.message.reply_text("⚠️ Failed to register. Try again.\n⚠️ ምዝገባ አልተሳካም።")
             return
-        caption = get_msg("admin_approve_worker", name=data["name"], phone=data["phone"])
+        caption = get_msg("admin_approve_worker", name=data.get("name", ""), phone=data.get("phone", ""))
         try:
             await context.bot.send_photo(
                 chat_id=ADMIN_CHAT_ID,
@@ -773,8 +955,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ No worker assigned. Please wait for a worker first.\n⚠️ ሰራተኛ አልተመደበም።")
             return
         try:
-            worker_sheet = get_worksheet("Workers")
-            worker_records = worker_sheet.get_all_records()
+            worker_records = get_worksheet_data("Workers")
             worker_info = None
             for wr in worker_records:
                 if str(wr.get("Worker_ID")) == str(worker_id):
@@ -790,8 +971,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption = (
             f"🆕 PAYMENT VERIFICATION NEEDED\n"
             f"Client ID: {user_id}\n"
-            f"Worker: {worker_info['Full_Name']}\n"
-            f"Account Holder: {worker_info['Name_holder']}\n"
+            f"Worker: {worker_info.get('Full_Name', 'N/A')}\n"
+            f"Account Holder: {worker_info.get('Name_holder', 'N/A')}\n"
             f"Amount: 100 ETB"
         )
         try:
@@ -813,14 +994,38 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         worker_id = data["worker_id"]
         commission = int(total * COMMISSION_PERCENT)
         try:
-            sheet = get_worksheet("Orders")
-            records = sheet.get_all_records()
-            for i, record in enumerate(records, start=2):
-                if record.get("Order_ID") == data["order_id"]:
-                    sheet.update_cell(i, 12, "Fully Paid")
+            worksheet = get_worksheet("Orders")
+            all_values = worksheet.get_all_values()
+            
+            if not all_values:
+                await update.message.reply_text("⚠️ Error updating order.\n⚠️ ትዕዛዝ ማሻሻል ላይ ስህተት።")
+                return
+            
+            headers = all_values[0]
+            payment_status_col = None
+            
+            # Find payment status column
+            for j, header in enumerate(headers):
+                if header == "Payment_Status":
+                    payment_status_col = j
                     break
+            
+            if payment_status_col is None:
+                # Try alternative column names
+                for j, header in enumerate(headers):
+                    if "Payment" in header and "Status" in header:
+                        payment_status_col = j
+                        break
+            
+            if payment_status_col is not None:
+                # Update payment status for the order
+                for i, row in enumerate(all_values[1:], start=2):
+                    if len(row) > 0 and row[0] == data["order_id"]:  # Order_ID is column A (index 0)
+                        worksheet.update_cell(i, payment_status_col + 1, "Fully Paid")
+                        break
         except Exception as e:
             logger.error(f"Order update error: {e}")
+        
         await context.bot.send_message(
             chat_id=worker_id,
             text=get_msg("commission_request", total=total, commission=commission)
@@ -856,13 +1061,13 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         USER_STATE[user_id]["data"] = data
         order_id = f"YZL-{datetime.now().strftime('%Y%m%d')}-{str(uuid4())[:4].upper()}"
         try:
-            sheet = get_worksheet("Orders")
-            sheet.append_row([
+            worksheet = get_worksheet("Orders")
+            worksheet.append_row([
                 order_id,
                 str(datetime.now()),
                 str(user_id),
-                data["bureau"],
-                data["city"],
+                data.get("bureau", ""),
+                data.get("city", ""),
                 "Pending",
                 "",
                 "1",
@@ -881,22 +1086,21 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✅ Order created! Notifying workers...\n✅ ትዕዛዝ ተፈጸመ! ሠራተኞች ተሳይተዋል..."
         )
         try:
-            worker_sheet = get_worksheet("Workers")
-            worker_records = worker_sheet.get_all_records()
+            worker_records = get_worksheet_data("Workers")
             notified_count = 0
             for worker in worker_records:
                 if worker.get("Status") == "Active":
                     try:
                         await context.bot.send_message(
-                            chat_id=int(worker["Telegram_ID"]),
-                            text=get_msg("job_post", bureau=data["bureau"], city=data["city"], rate=HOURLY_RATE),
+                            chat_id=int(worker.get("Telegram_ID", 0)),
+                            text=get_msg("job_post", bureau=data.get("bureau", ""), city=data.get("city", ""), rate=HOURLY_RATE),
                             reply_markup=InlineKeyboardMarkup([
                                 [InlineKeyboardButton("Accept", callback_data=f"accept_{order_id}_{user_id}")]
                             ])
                         )
                         notified_count += 1
                     except Exception as e:
-                        logger.error(f"Failed to notify worker {worker['Telegram_ID']}: {e}")
+                        logger.error(f"Failed to notify worker {worker.get('Telegram_ID')}: {e}")
             logger.info(f"Notified {notified_count} workers about order {order_id}")
         except Exception as e:
             logger.error(f"Worker notification error: {e}")
@@ -908,65 +1112,122 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif state == STATE_WORKER_CHECKIN_LOCATION:
         data["checkin_location"] = (update.message.location.latitude, update.message.location.longitude)
         try:
-            sheet = get_worksheet("Orders")
-            records = sheet.get_all_records()
-            for i, record in enumerate(records, start=2):
-                if record.get("Worker_ID") == str(user_id) and record.get("Status") == "Assigned":
-                    sheet.update_cell(i, 6, "Checked In")
-                    client_id = record.get("Client_TG_ID")
-                    asyncio.run_coroutine_threadsafe(
-                        context.bot.send_message(
-                            chat_id=int(client_id),
-                            text="✅ Worker checked in! Live location active.\n✅ ሠራተኛ ተገኝቷል! የቀጥታ መገኛ አንስቶ ነው።"
-                        ),
-                        MAIN_LOOP
-                    )
-                    order_id = record.get("Order_ID")
-                    job_lat = float(record.get("Latitude", 0))
-                    job_lon = float(record.get("Longitude", 0))
-                    distance = calculate_distance(
-                        update.message.location.latitude,
-                        update.message.location.longitude,
-                        job_lat,
-                        job_lon
-                    )
-                    if distance > MAX_ALLOWED_DISTANCE:
-                        ban_user(user_id, f"Left job site (>500m)")
-                        sheet.update_cell(i, 6, "Cancelled")
+            worksheet = get_worksheet("Orders")
+            all_values = worksheet.get_all_values()
+            
+            if not all_values:
+                await update.message.reply_text("⚠️ Error checking in.\n⚠️ ምዝገባ ላይ ስህተት።")
+                return
+            
+            headers = all_values[0]
+            status_col = None
+            client_id_col = None
+            worker_id_col = None
+            latitude_col = None
+            longitude_col = None
+            
+            # Find column indices
+            for j, header in enumerate(headers):
+                if header == "Status":
+                    status_col = j
+                elif header == "Client_TG_ID":
+                    client_id_col = j
+                elif header == "Worker_ID":
+                    worker_id_col = j
+                elif header == "Latitude":
+                    latitude_col = j
+                elif header == "Longitude":
+                    longitude_col = j
+            
+            for i, row in enumerate(all_values[1:], start=2):
+                if (worker_id_col is not None and worker_id_col < len(row) and 
+                    str(row[worker_id_col]) == str(user_id) and 
+                    status_col is not None and status_col < len(row) and 
+                    row[status_col] == "Assigned"):
+                    
+                    # Update status to "Checked In"
+                    if status_col is not None:
+                        worksheet.update_cell(i, status_col + 1, "Checked In")
+                    
+                    # Notify client
+                    if client_id_col is not None and client_id_col < len(row):
+                        client_id = row[client_id_col]
                         asyncio.run_coroutine_threadsafe(
                             context.bot.send_message(
                                 chat_id=int(client_id),
-                                text=get_msg("worker_far_ban")
+                                text="✅ Worker checked in! Live location active.\n✅ ሠራተኛ ተገኝቷል! የቀጥታ መገኛ አንስቶ ነው።"
                             ),
                             MAIN_LOOP
                         )
-                        asyncio.run_coroutine_threadsafe(
-                            context.bot.send_message(
-                                chat_id=user_id,
-                                text=get_msg("worker_far_ban")
-                            ),
-                            MAIN_LOOP
-                        )
-                        logger.info(f"Auto-banned worker {user_id} for moving {distance:.0f}m from job site")
-                    elif distance > MAX_WARNING_DISTANCE:
-                        asyncio.run_coroutine_threadsafe(
-                            context.bot.send_message(
-                                chat_id=int(client_id),
-                                text=get_msg("worker_far_warning")
-                            ),
-                            MAIN_LOOP
-                        )
-                        asyncio.run_coroutine_threadsafe(
-                            context.bot.send_message(
-                                chat_id=user_id,
-                                text=get_msg("worker_far_warning")
-                            ),
-                            MAIN_LOOP
-                        )
-                        logger.info(f"Warning: worker {user_id} moved {distance:.0f}m from job site")
+                    
+                    # Get job location and calculate distance
+                    if (latitude_col is not None and latitude_col < len(row) and 
+                        longitude_col is not None and longitude_col < len(row) and
+                        row[latitude_col] and row[longitude_col]):
+                        
+                        order_id = row[0]  # First column is Order_ID
+                        try:
+                            job_lat = float(row[latitude_col])
+                            job_lon = float(row[longitude_col])
+                            
+                            distance = calculate_distance(
+                                update.message.location.latitude,
+                                update.message.location.longitude,
+                                job_lat,
+                                job_lon
+                            )
+                            
+                            if distance > MAX_ALLOWED_DISTANCE:
+                                ban_user(user_id, f"Left job site (>500m)")
+                                if status_col is not None:
+                                    worksheet.update_cell(i, status_col + 1, "Cancelled")
+                                
+                                if client_id_col is not None and client_id_col < len(row):
+                                    client_id = row[client_id_col]
+                                    asyncio.run_coroutine_threadsafe(
+                                        context.bot.send_message(
+                                            chat_id=int(client_id),
+                                            text=get_msg("worker_far_ban")
+                                        ),
+                                        MAIN_LOOP
+                                    )
+                                
+                                asyncio.run_coroutine_threadsafe(
+                                    context.bot.send_message(
+                                        chat_id=user_id,
+                                        text=get_msg("worker_far_ban")
+                                    ),
+                                    MAIN_LOOP
+                                )
+                                logger.info(f"Auto-banned worker {user_id} for moving {distance:.0f}m from job site")
+                                
+                            elif distance > MAX_WARNING_DISTANCE:
+                                if client_id_col is not None and client_id_col < len(row):
+                                    client_id = row[client_id_col]
+                                    asyncio.run_coroutine_threadsafe(
+                                        context.bot.send_message(
+                                            chat_id=int(client_id),
+                                            text=get_msg("worker_far_warning")
+                                        ),
+                                        MAIN_LOOP
+                                    )
+                                
+                                asyncio.run_coroutine_threadsafe(
+                                    context.bot.send_message(
+                                        chat_id=user_id,
+                                        text=get_msg("worker_far_warning")
+                                    ),
+                                    MAIN_LOOP
+                                )
+                                logger.info(f"Warning: worker {user_id} moved {distance:.0f}m from job site")
+                                
+                        except (ValueError, TypeError) as e:
+                            logger.error(f"Distance calculation error: {e}")
+                    
                     break
         except Exception as e:
             logger.error(f"Check-in update error: {e}")
+        
         keyboard = [
             ["✅ I'm at the front of the line"],
             ["↩️ Back to Main Menu"]
@@ -988,103 +1249,170 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_user_banned(user_id):
         await query.message.reply_text(get_msg("user_banned"))
         return
+    
     data = query.data
-    if data == "cancel":
-        USER_STATE[user_id] = {"state": STATE_NONE, "data": {}}
-        await query.message.reply_text("Cancelled.\nሰርዟል።")
-    elif data.startswith("approve_"):
+    
+    if data.startswith("accept_"):
         parts = data.split("_")
-        worker_tg_id = parts[1]
-        worker_db_id = parts[2]
-        try:
-            sheet = get_worksheet("Workers")
-            records = sheet.get_all_records()
-            for i, record in enumerate(records, start=2):
-                if str(record.get("Worker_ID")) == str(worker_db_id):
-                    sheet.update_cell(i, 7, "Active")
-                    break
-        except Exception as e:
-            logger.error(f"Approve error: {e}")
-        try:
-            await context.bot.send_message(chat_id=int(worker_tg_id), text=get_msg("worker_approved"))
-        except Exception as e:
-            logger.error(f"Message worker error: {e}")
-        await query.edit_message_caption(caption="✅ Approved!\n✅ ተፈቅዶልናል!")
-    elif data.startswith("decline_"):
-        worker_tg_id = data.split("_")[1]
-        try:
-            sheet = get_worksheet("Workers")
-            records = sheet.get_all_records()
-            for i, record in enumerate(records, start=2):
-                if str(record.get("Telegram_ID")) == str(worker_tg_id):
-                    sheet.update_cell(i, 7, "Declined")
-                    break
-        except Exception as e:
-            logger.error(f"Decline error: {e}")
-        await context.bot.send_message(chat_id=int(worker_tg_id), text=get_msg("worker_declined"))
-        await query.edit_message_caption(caption="❌ Declined.\n❌ ተውግዷል።")
-    elif data.startswith("accept_"):
-        parts = data.split("_")
+        if len(parts) < 3:
+            await context.bot.send_message(chat_id=user_id, text="⚠️ Invalid job data.")
+            return
+        
         order_id = parts[1]
         client_id = parts[2]
+        
         try:
-            sheet = get_worksheet("Orders")
-            records = sheet.get_all_records()
+            # Get all orders
+            all_values = []
+            try:
+                worksheet = get_worksheet("Orders")
+                all_values = worksheet.get_all_values()
+            except Exception as e:
+                logger.error(f"Error getting Orders worksheet: {e}")
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="⚠️ Error accessing orders. Please try again.\n⚠️ ትዕዛዞች ላይ ስህተት። እንደገና ይሞክሩ።"
+                )
+                return
+            
+            if not all_values or len(all_values) < 2:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="⚠️ No orders found."
+                )
+                return
+            
+            # Get headers
+            headers = all_values[0]
+            
+            # Find the order
             order = None
             row_idx = -1
-            for i, record in enumerate(records):
-                if record.get("Order_ID") == order_id:
-                    order = record
-                    row_idx = i + 2
+            status_col_idx = None
+            
+            # Find status column
+            for j, header in enumerate(headers):
+                if header == "Status":
+                    status_col_idx = j
                     break
-            if not order or order.get("Status") != "Pending":
+            
+            if status_col_idx is None:
+                # Try to find status column with different name
+                for j, header in enumerate(headers):
+                    if "status" in header.lower():
+                        status_col_idx = j
+                        break
+            
+            for i, row in enumerate(all_values[1:], start=2):
+                if len(row) > 0 and row[0] == order_id:  # Order_ID is first column
+                    order = {}
+                    for j, header in enumerate(headers):
+                        if j < len(row):
+                            order[header] = row[j]
+                        else:
+                            order[header] = ""
+                    row_idx = i
+                    break
+            
+            if not order:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="⚠️ Order not found.\n⚠️ ትዕዛዝ አልተገኘም።"
+                )
+                return
+            
+            # Check if job is still available
+            if order.get("Status") != "Pending":
                 await context.bot.send_message(
                     chat_id=user_id,
                     text="⚠️ Sorry, this job was already taken by another worker.\n⚠️ ስራው ቀድሞውና ተወስቷል።"
                 )
                 return
+                
         except Exception as e:
             logger.error(f"Job lock check error: {e}")
-            await context.bot.send_message(chat_id=user_id, text="⚠️ Job assignment failed. Try again.")
+            await context.bot.send_message(
+                chat_id=user_id, 
+                text="⚠️ Job assignment failed. Please try again.\n⚠️ ስራ ማድረግ አልተሳካም። እንደገና ይሞክሩ።"
+            )
             return
+        
         try:
-            sheet.update_cell(row_idx, 7, str(user_id))
-            sheet.update_cell(row_idx, 6, "Assigned")
-            worker_sheet = get_worksheet("Workers")
-            worker_records = worker_sheet.get_all_records()
-            worker_info = None
-            for wr in worker_records:
-                if str(wr.get("Telegram_ID")) == str(user_id):
-                    worker_info = wr
+            # Update the order status and assign worker
+            worksheet = get_worksheet("Orders")
+            
+            # Find Worker_ID column
+            worker_id_col = None
+            for j, header in enumerate(headers):
+                if header == "Worker_ID":
+                    worker_id_col = j
                     break
+            
+            # Update worker ID
+            if worker_id_col is not None:
+                worksheet.update_cell(row_idx, worker_id_col + 1, str(user_id))
+            else:
+                # If Worker_ID column not found, try column 7 (G) as fallback
+                worksheet.update_cell(row_idx, 7, str(user_id))
+            
+            # Update status to "Assigned"
+            if status_col_idx is not None:
+                worksheet.update_cell(row_idx, status_col_idx + 1, "Assigned")
+            else:
+                # If Status column not found, try column 6 (F) as fallback
+                worksheet.update_cell(row_idx, 6, "Assigned")
+            
+            # Get worker info
+            worker_info = None
+            try:
+                worker_records = get_worksheet_data("Workers")
+                for wr in worker_records:
+                    if str(wr.get("Telegram_ID")) == str(user_id):
+                        worker_info = wr
+                        break
+            except Exception as e:
+                logger.error(f"Error getting worker info: {e}")
+            
             if worker_info:
+                # Format account number for display
+                account_number = str(worker_info.get("Account_number", ""))
+                last_four = account_number[-4:] if len(account_number) >= 4 else account_number
+                
                 contact_msg = (
                     f"👷‍♂️ Worker found!\n"
-                    f"Name: {worker_info['Full_Name']}\n"
-                    f"Phone: {worker_info['Phone_Number']}\n"
-                    f"Telebirr: {worker_info['Telebirr_number']}\n"
-                    f"Bank: {worker_info['Bank_type']} ••••{str(worker_info['Account_number'])[-4:]}"
+                    f"Name: {worker_info.get('Full_Name', 'N/A')}\n"
+                    f"Phone: {worker_info.get('Phone_Number', 'N/A')}\n"
+                    f"Telebirr: {worker_info.get('Telebirr_number', 'N/A')}\n"
+                    f"Bank: {worker_info.get('Bank_type', 'N/A')} ••••{last_four}"
                 )
                 await context.bot.send_message(chat_id=int(client_id), text=contact_msg)
                 await context.bot.send_message(
                     chat_id=int(client_id),
                     text="💳 Pay 100 ETB to their Telebirr or bank, then upload payment receipt.\n💳 ለቴሌቢር ወይም ባንክ አካውንቱ 100 ብር ይላክሱ እና ሲምበር ያስገቡ።"
                 )
+                
                 if int(client_id) not in USER_STATE:
                     USER_STATE[int(client_id)] = {"state": STATE_NONE, "data": {}}
                 USER_STATE[int(client_id)]["state"] = STATE_CLIENT_BOOKING_RECEIPT
-                USER_STATE[int(client_id)]["data"]["assigned_worker"] = worker_info["Worker_ID"]
+                USER_STATE[int(client_id)]["data"]["assigned_worker"] = worker_info.get("Worker_ID", "")
             else:
-                await context.bot.send_message(chat_id=int(client_id), text="⚠️ Worker details not found.\n⚠️ ዝርዝሮች አልተገኙም።")
-            bureau = order["Bureau_Name"]
+                await context.bot.send_message(
+                    chat_id=int(client_id), 
+                    text="⚠️ Worker details not found.\n⚠️ ዝርዝሮች አልተገኙም።"
+                )
+            
+            bureau = order.get("Bureau_Name", "")
             USER_STATE[user_id] = {
                 "state": STATE_WORKER_CHECKIN_PHOTO,
                 "data": {"order_id": order_id, "bureau": bureau}
             }
+            
             await context.bot.send_message(
                 chat_id=user_id,
                 text=get_msg("checkin_photo", bureau=bureau)
             )
+            
+            # Start location monitoring
             context.job_queue.run_repeating(
                 check_worker_location,
                 interval=300,
@@ -1092,35 +1420,174 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 data={"worker_id": user_id, "order_id": order_id},
                 name=f"location_monitor_{order_id}"
             )
+            
+            # Notify worker of successful acceptance
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"✅ You've accepted the job at {bureau}! Please proceed to check-in.\n✅ በ{bureau} ያለውን ስራ ተቀብለዋል! እባክዎን ወደ ምዝገባ ይሂዱ።"
+            )
+            
+            # Notify client
+            await context.bot.send_message(
+                chat_id=int(client_id),
+                text=f"✅ A worker has accepted your job at {bureau}! They will check in soon.\n✅ በ{bureau} ያለውን ስራዎ ሠራተኛ ተቀብሏል! በቅርቡ ያገኙዎታል።"
+            )
+            
         except Exception as e:
             logger.error(f"Accept error: {e}")
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="⚠️ Error accepting job. Please contact admin.\n⚠️ ስራ መቀበል ላይ ስህተት ተፈጥሯል። አስተዳዳሪውን ያነጋግሩ።"
+            )
+    
+    elif data == "cancel":
+        USER_STATE[user_id] = {"state": STATE_NONE, "data": {}}
+        await query.message.reply_text("Cancelled.\nሰርዟል።")
+    
+    elif data.startswith("approve_"):
+        parts = data.split("_")
+        if len(parts) < 3:
+            return
+        
+        worker_tg_id = parts[1]
+        worker_db_id = parts[2]
+        
+        try:
+            worksheet = get_worksheet("Workers")
+            all_values = worksheet.get_all_values()
+            
+            if not all_values:
+                return
+            
+            headers = all_values[0]
+            status_col = None
+            
+            # Find status column
+            for j, header in enumerate(headers):
+                if header == "Status":
+                    status_col = j
+                    break
+            
+            if status_col is None:
+                return
+            
+            # Update worker status
+            for i, row in enumerate(all_values[1:], start=2):
+                if len(row) > 0 and row[0] == worker_db_id:  # Worker_ID is first column
+                    worksheet.update_cell(i, status_col + 1, "Active")
+                    break
+            
+            await context.bot.send_message(
+                chat_id=int(worker_tg_id), 
+                text=get_msg("worker_approved")
+            )
+            await query.edit_message_caption(caption="✅ Approved!\n✅ ተፈቅዶልናል!")
+            
+        except Exception as e:
+            logger.error(f"Approve error: {e}")
+    
+    elif data.startswith("decline_"):
+        if len(data.split("_")) < 2:
+            return
+        
+        worker_tg_id = data.split("_")[1]
+        
+        try:
+            worksheet = get_worksheet("Workers")
+            all_values = worksheet.get_all_values()
+            
+            if not all_values:
+                return
+            
+            headers = all_values[0]
+            status_col = None
+            
+            # Find status column
+            for j, header in enumerate(headers):
+                if header == "Status":
+                    status_col = j
+                    break
+            
+            if status_col is None:
+                return
+            
+            # Update worker status
+            for i, row in enumerate(all_values[1:], start=2):
+                if len(row) > 0 and str(row[3]) == str(worker_tg_id):  # Telegram_ID is usually column D (index 3)
+                    worksheet.update_cell(i, status_col + 1, "Declined")
+                    break
+            
+            await context.bot.send_message(
+                chat_id=int(worker_tg_id), 
+                text=get_msg("worker_declined")
+            )
+            await query.edit_message_caption(caption="❌ Declined.\n❌ ተውግዷል።")
+            
+        except Exception as e:
+            logger.error(f"Decline error: {e}")
+    
     elif data.startswith("verify_"):
         parts = data.split("_")
+        if len(parts) < 3:
+            return
+        
         client_id = int(parts[1])
         worker_id = parts[2]
+        
         try:
-            sheet = get_worksheet("Orders")
-            records = sheet.get_all_records()
-            for i, record in enumerate(records, start=2):
-                if record.get("Client_TG_ID") == str(client_id) and record.get("Status") == "Pending":
-                    sheet.update_cell(i, 6, "Verified")
-                    sheet.update_cell(i, 10, "Yes")
+            worksheet = get_worksheet("Orders")
+            all_values = worksheet.get_all_values()
+            
+            if not all_values:
+                return
+            
+            headers = all_values[0]
+            status_col = None
+            payment_verified_col = None
+            
+            # Find columns
+            for j, header in enumerate(headers):
+                if header == "Status":
+                    status_col = j
+                elif header == "Payment_Verified":
+                    payment_verified_col = j
+            
+            # Update order
+            for i, row in enumerate(all_values[1:], start=2):
+                if len(row) > 0 and str(row[2]) == str(client_id) and row[5] == "Pending":  # Client_TG_ID and Status
+                    if status_col is not None:
+                        worksheet.update_cell(i, status_col + 1, "Verified")
+                    if payment_verified_col is not None:
+                        worksheet.update_cell(i, payment_verified_col + 1, "Yes")
                     break
+            
+            await context.bot.send_message(
+                chat_id=client_id, 
+                text="✅ Payment verified! Job proceeding.\n✅ ክፍያ ተረጋግጧል! ስራ ተከዋል።"
+            )
+            await query.edit_message_caption(caption="✅ Verified!\n✅ ተረጋግጧል!")
+            
         except Exception as e:
             logger.error(f"Verify error: {e}")
-        await context.bot.send_message(chat_id=client_id, text="✅ Payment verified! Job proceeding.\n✅ ክፍያ ተረጋግጧል! ስራ ተከዋል።")
-        await query.edit_message_caption(caption="✅ Verified!\n✅ ተረጋግጧል!")
+    
     elif data.startswith("reject_"):
+        if len(data.split("_")) < 2:
+            return
+        
         client_id = int(data.split("_")[1])
-        await context.bot.send_message(chat_id=client_id, text="❌ Payment rejected. Please resend correct receipt.\n❌ ክፍያ ተውግዷል። እባክዎን ትክክለኛ ሲምበር ይላኩ።")
+        
+        await context.bot.send_message(
+            chat_id=client_id, 
+            text="❌ Payment rejected. Please resend correct receipt.\n❌ ክፍያ ተውግዷል። እባክዎን ትክክለኛ ሲምበር ይላኩ።"
+        )
         await query.edit_message_caption(caption="❌ Rejected.\n❌ ተውግዷል።")
+    
     elif data == "turn_on_location":
         order_id = USER_STATE[user_id]["data"].get("order_id")
         if order_id:
             try:
-                sheet = get_worksheet("Orders")
-                records = sheet.get_all_records()
-                for record in records:
+                orders = get_worksheet_data("Orders")
+                for record in orders:
                     if record.get("Order_ID") == order_id:
                         worker_id = record.get("Worker_ID")
                         await context.bot.send_message(
