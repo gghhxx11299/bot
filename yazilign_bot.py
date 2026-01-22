@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 USER_STATE = {}
 
 # ======================
-# USER STATES (FIXED - NO UNPACKING)
+# USER STATES
 # ======================
 
 STATE_NONE = 0
@@ -76,12 +76,16 @@ STATE_CLIENT_FINAL_HOURS = 5
 STATE_CLIENT_FINAL_RECEIPT = 6
 STATE_WORKER_NAME = 7
 STATE_WORKER_PHONE = 8
-STATE_WORKER_FYDA = 9
-STATE_WORKER_CHECKIN_PHOTO = 10
-STATE_WORKER_CHECKIN_LOCATION = 11
-STATE_DISPUTE_REASON = 12
-STATE_RATING = 13
-STATE_CLIENT_MONITORING = 14
+STATE_WORKER_TELEBIRR = 9
+STATE_WORKER_BANK_TYPE = 10
+STATE_WORKER_ACCOUNT_NUMBER = 11
+STATE_WORKER_ACCOUNT_HOLDER = 12
+STATE_WORKER_FYDA = 13
+STATE_WORKER_CHECKIN_PHOTO = 14
+STATE_WORKER_CHECKIN_LOCATION = 15
+STATE_DISPUTE_REASON = 16
+STATE_RATING = 17
+STATE_CLIENT_MONITORING = 18
 
 # ======================
 # MESSAGES
@@ -156,23 +160,52 @@ def log_to_history(user_id, role, action, details=""):
     except Exception as e:
         logger.error(f"Log error: {e}")
 
-def is_user_banned(phone=None, tg_id=None):
+def is_user_banned(user_id):
     try:
-        sheet = get_worksheet("Banned")
+        sheet = get_worksheet("Users")
         records = sheet.get_all_records()
         for r in records:
-            if (phone and r.get("Phone_Number") == phone) or (tg_id and str(r.get("Telegram_ID")) == str(tg_id)):
+            if str(r.get("User_ID")) == str(user_id) and r.get("Status") == "Banned":
                 return True
     except Exception as e:
         logger.error(f"Ban check error: {e}")
     return False
 
-def ban_user(phone, tg_id, reason=""):
+def ban_user(user_id, reason=""):
     try:
-        sheet = get_worksheet("Banned")
-        sheet.append_row([phone, str(tg_id), reason, str(datetime.now())])
+        sheet = get_worksheet("Users")
+        records = sheet.get_all_records()
+        for i, record in enumerate(records, start=2):
+            if str(record.get("User_ID")) == str(user_id):
+                sheet.update_cell(i, 6, "Banned")  # Status column
+                break
     except Exception as e:
         logger.error(f"Ban error: {e}")
+
+def get_or_create_user(user_id, first_name, username, role=None):
+    try:
+        sheet = get_worksheet("Users")
+        records = sheet.get_all_records()
+        for r in records:
+            if str(r.get("User_ID")) == str(user_id):
+                return r
+        
+        # Create new user
+        now = str(datetime.now())
+        sheet.append_row([
+            str(user_id),
+            first_name,
+            username or "",
+            "",  # Phone_Number (optional)
+            role or "Client",
+            "Active",
+            now,
+            now
+        ])
+        return {"User_ID": user_id, "Role": role or "Client", "Status": "Active"}
+    except Exception as e:
+        logger.error(f"User creation error: {e}")
+        return None
 
 def update_worker_rating(worker_id, rating):
     try:
@@ -197,7 +230,7 @@ def start_commission_timer(application, order_id, worker_id, total_amount):
     commission = int(total_amount * COMMISSION_PERCENT)
     
     def final_action():
-        ban_user(phone="unknown", tg_id=worker_id, reason="Missed commission")
+        ban_user(worker_id, reason="Missed commission")
         asyncio.run_coroutine_threadsafe(
             application.bot.send_message(
                 chat_id=ADMIN_CHAT_ID,
@@ -213,11 +246,28 @@ def start_commission_timer(application, order_id, worker_id, total_amount):
 # ======================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    user = update.effective_user
+    user_id = user.id
+    first_name = user.first_name or "User"
+    username = user.username
+
+    if is_user_banned(user_id):
+        await update.message.reply_text(get_msg("user_banned", "en"))
+        return
+
+    user_record = get_or_create_user(user_id, first_name, username)
+    if not user_record:
+        await update.message.reply_text("⚠️ System error. Please try again.")
+        return
+
+    role = user_record["Role"]
     USER_STATE[user_id] = {"state": STATE_NONE, "data": {}, "lang": "en"}
-    keyboard = [["Client", "Worker"]]
-    if user_id == ADMIN_CHAT_ID:
-        keyboard.append(["Admin"])
+
+    if role == "Admin" and user_id == ADMIN_CHAT_ID:
+        keyboard = [["Client", "Worker", "Admin"]]
+    else:
+        keyboard = [["Client", "Worker"]]
+    
     await update.message.reply_text(
         get_msg("start", "en"),
         reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
@@ -244,7 +294,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif text == "Worker":
-        if is_user_banned(tg_id=user_id):
+        if is_user_banned(user_id):
             await update.message.reply_text(get_msg("user_banned", lang))
             return
         USER_STATE[user_id] = {"state": STATE_WORKER_NAME, "data": {}, "lang": lang}
@@ -281,9 +331,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif state == STATE_WORKER_PHONE:
         data["phone"] = text
-        if is_user_banned(phone=text):
-            await update.message.reply_text(get_msg("user_banned", lang))
-            return
+        USER_STATE[user_id] = {"state": STATE_WORKER_TELEBIRR, "data": data, "lang": lang}
+        await update.message.reply_text("📱 Enter your Telebirr number:")
+
+    elif state == STATE_WORKER_TELEBIRR:
+        data["telebirr"] = text
+        USER_STATE[user_id] = {"state": STATE_WORKER_BANK_TYPE, "data": data, "lang": lang}
+        await update.message.reply_text("🏦 Enter your bank type (e.g., CBE, Awash, Dashen):")
+
+    elif state == STATE_WORKER_BANK_TYPE:
+        data["bank_type"] = text
+        USER_STATE[user_id] = {"state": STATE_WORKER_ACCOUNT_NUMBER, "data": data, "lang": lang}
+        await update.message.reply_text("🔢 Enter your account number:")
+
+    elif state == STATE_WORKER_ACCOUNT_NUMBER:
+        data["account_number"] = text
+        USER_STATE[user_id] = {"state": STATE_WORKER_ACCOUNT_HOLDER, "data": data, "lang": lang}
+        await update.message.reply_text("👤 Enter your account holder name (as on bank):")
+
+    elif state == STATE_WORKER_ACCOUNT_HOLDER:
+        data["account_holder"] = text
         USER_STATE[user_id] = {"state": STATE_WORKER_FYDA, "data": data, "lang": lang}
         await update.message.reply_text(get_msg("worker_fyda", lang))
 
@@ -330,8 +397,17 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             sheet = get_worksheet("Workers")
             sheet.append_row([
-                worker_id, data["name"], data["phone"], str(user_id),
-                "0", "0", "Pending"
+                worker_id,
+                data["name"],
+                data["phone"],
+                str(user_id),
+                "0",  # Rating
+                "0",  # Total_Earnings
+                "Pending",
+                data["telebirr"],
+                data["bank_type"],
+                data["account_number"],
+                data["account_holder"]
             ])
         except Exception as e:
             logger.error(f"Worker save error: {e}")
@@ -352,23 +428,47 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📄 Sent to admin.")
 
     elif state == STATE_CLIENT_BOOKING_RECEIPT:
-        order_id = f"YZL-{datetime.now().strftime('%Y%m%d')}-{str(uuid4())[:4].upper()}"
-        try:
-            sheet = get_worksheet("Orders")
-            sheet.append_row([
-                order_id, str(datetime.now()), str(user_id),
-                data["bureau"], data["city"], "Booking Paid", "",
-                "1", str(HOURLY_RATE), "Yes", "0", "Booking Paid"
-            ])
-        except Exception as e:
-            logger.error(f"Order create error: {e}")
+        # Get assigned worker
+        worker_id = data.get("assigned_worker")
+        if not worker_id:
+            await update.message.reply_text("⚠️ No worker assigned.")
+            return
 
-        await context.bot.send_message(
-            chat_id=WORKER_CHANNEL_ID,
-            text=get_msg("job_post", "en", bureau=data["bureau"], city=data["city"], rate=HOURLY_RATE),
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Accept", callback_data=f"accept_{order_id}_{user_id}")]])
+        # Fetch worker info
+        try:
+            worker_sheet = get_worksheet("Workers")
+            worker_records = worker_sheet.get_all_records()
+            worker_info = None
+            for wr in worker_records:
+                if str(wr.get("Worker_ID")) == str(worker_id):
+                    worker_info = wr
+                    break
+            if not worker_info:
+                await update.message.reply_text("⚠️ Worker not found.")
+                return
+        except Exception as e:
+            logger.error(f"Worker fetch error: {e}")
+            await update.message.reply_text("⚠️ Error fetching worker.")
+            return
+
+        # Forward to admin
+        caption = (
+            f"🆕 Payment Verification Needed\n"
+            f"Client: {user_id}\n"
+            f"Worker: {worker_info['Full_Name']}\n"
+            f"Account Holder: {worker_info['Name_holder']}\n"
+            f"Amount: 100 ETB"
         )
-        await update.message.reply_text(get_msg("order_created", lang))
+        await context.bot.send_photo(
+            chat_id=ADMIN_CHAT_ID,
+            photo=update.message.photo[-1].file_id,
+            caption=caption,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Verify", callback_data=f"verify_{user_id}_{worker_id}")],
+                [InlineKeyboardButton("❌ Reject", callback_data=f"reject_{user_id}")]
+            ])
+        )
+        await update.message.reply_text("📄 Receipt sent to admin for verification.")
 
     elif state == STATE_CLIENT_FINAL_RECEIPT:
         total = data["total"]
@@ -404,6 +504,11 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state_info = USER_STATE.get(user_id, {})
     state = state_info.get("state", STATE_NONE)
     data = state_info.get("data", {})
+
+    # SAFETY CHECK
+    if not update.message or not update.message.location:
+        await update.message.reply_text("📍 Please share a valid live location.")
+        return
 
     if state == STATE_CLIENT_LOCATION:
         data["location"] = (update.message.location.latitude, update.message.location.longitude)
@@ -481,19 +586,40 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             records = sheet.get_all_records()
             order = None
             for record in records:
-                if record.get("Order_ID") == order_id and record.get("Status") == "Booking Paid":
+                if record.get("Order_ID") == order_id and record.get("Status") == "Verified":
                     order = record
                     break
             if order:
                 row_idx = records.index(order) + 2
-                sheet.update_cell(row_idx, 7, str(user_id))
-                sheet.update_cell(row_idx, 6, "Assigned")
+                sheet.update_cell(row_idx, 7, str(user_id))  # Worker_ID
+                sheet.update_cell(row_idx, 6, "Assigned")   # Status
 
-                await context.bot.send_message(
-                    chat_id=int(client_id),
-                    text=get_msg("worker_accepted", "en")
-                )
+                # Get worker info
+                worker_sheet = get_worksheet("Workers")
+                worker_records = worker_sheet.get_all_records()
+                worker_info = None
+                for wr in worker_records:
+                    if str(wr.get("Telegram_ID")) == str(user_id):
+                        worker_info = wr
+                        break
 
+                if worker_info:
+                    contact_msg = (
+                        f"👷‍♂️ Worker found!\n"
+                        f"Name: {worker_info['Full_Name']}\n"
+                        f"Phone: {worker_info['Phone_Number']}\n"
+                        f"Telebirr: {worker_info['Telebirr_number']}\n"
+                        f"Bank: {worker_info['Bank_type']} ••••{str(worker_info['Account_number'])[-4:]}"
+                    )
+                    await context.bot.send_message(chat_id=int(client_id), text=contact_msg)
+                    await context.bot.send_message(
+                        chat_id=int(client_id),
+                        text="💳 Pay 100 ETB to their Telebirr or bank, then upload payment receipt."
+                    )
+                else:
+                    await context.bot.send_message(chat_id=int(client_id), text="⚠️ Worker details not found.")
+
+                # Tell worker to check in
                 bureau = order["Bureau_Name"]
                 USER_STATE[user_id] = {
                     "state": STATE_WORKER_CHECKIN_PHOTO,
@@ -506,6 +632,36 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         except Exception as e:
             logger.error(f"Accept error: {e}")
+
+    elif data.startswith("verify_"):
+        parts = data.split("_")
+        client_id = int(parts[1])
+        worker_id = parts[2]
+
+        try:
+            sheet = get_worksheet("Orders")
+            records = sheet.get_all_records()
+            for i, record in enumerate(records, start=2):
+                if record.get("Client_TG_ID") == str(client_id) and record.get("Status") == "Booking Paid":
+                    sheet.update_cell(i, 6, "Verified")
+                    bureau = record["Bureau_Name"]
+                    city = record["City"]
+                    await context.bot.send_message(
+                        chat_id=WORKER_CHANNEL_ID,
+                        text=get_msg("job_post", "en", bureau=bureau, city=city, rate=HOURLY_RATE),
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Accept", callback_data=f"accept_{record['Order_ID']}_{client_id}")]])
+                    )
+                    break
+        except Exception as e:
+            logger.error(f"Verify error: {e}")
+
+        await context.bot.send_message(chat_id=client_id, text="✅ Payment verified! Workers are being notified.")
+        await query.edit_message_caption(caption="✅ Verified!")
+
+    elif data.startswith("reject_"):
+        client_id = int(data.split("_")[1])
+        await context.bot.send_message(chat_id=client_id, text="❌ Payment rejected. Please resend correct receipt.")
+        await query.edit_message_caption(caption="❌ Rejected.")
 
     elif data == "turn_on_location":
         order_id = USER_STATE[user_id]["data"].get("order_id")
