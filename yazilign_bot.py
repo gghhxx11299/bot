@@ -63,14 +63,25 @@ logger = logging.getLogger(__name__)
 
 USER_STATE = {}
 
-# States
-(
-    STATE_NONE, STATE_CLIENT_CITY, STATE_CLIENT_BUREAU, STATE_CLIENT_LOCATION,
-    STATE_CLIENT_BOOKING_RECEIPT, STATE_CLIENT_FINAL_HOURS, STATE_CLIENT_FINAL_RECEIPT,
-    STATE_WORKER_NAME, STATE_WORKER_PHONE, STATE_WORKER_FYDA,
-    STATE_WORKER_CHECKIN_PHOTO, STATE_WORKER_CHECKIN_LOCATION,
-    STATE_DISPUTE_REASON, STATE_RATING
-) = range(15)
+# ======================
+# USER STATES (FIXED - NO UNPACKING)
+# ======================
+
+STATE_NONE = 0
+STATE_CLIENT_CITY = 1
+STATE_CLIENT_BUREAU = 2
+STATE_CLIENT_LOCATION = 3
+STATE_CLIENT_BOOKING_RECEIPT = 4
+STATE_CLIENT_FINAL_HOURS = 5
+STATE_CLIENT_FINAL_RECEIPT = 6
+STATE_WORKER_NAME = 7
+STATE_WORKER_PHONE = 8
+STATE_WORKER_FYDA = 9
+STATE_WORKER_CHECKIN_PHOTO = 10
+STATE_WORKER_CHECKIN_LOCATION = 11
+STATE_DISPUTE_REASON = 12
+STATE_RATING = 13
+STATE_CLIENT_MONITORING = 14
 
 # ======================
 # MESSAGES
@@ -170,16 +181,16 @@ def update_worker_rating(worker_id, rating):
         for i, record in enumerate(records, start=2):
             if str(record.get("Worker_ID")) == str(worker_id):
                 current_rating = float(record.get("Rating", 0))
-                total_jobs = int(record.get("Total_Earnings", 0))  # Reusing as job count
+                total_jobs = int(record.get("Total_Earnings", 0))
                 new_rating = (current_rating * total_jobs + rating) / (total_jobs + 1)
                 sheet.update_cell(i, 5, str(new_rating))
-                sheet.update_cell(i, 6, str(total_jobs + 1))  # Increment job count
+                sheet.update_cell(i, 6, str(total_jobs + 1))
                 break
     except Exception as e:
         logger.error(f"Rating update error: {e}")
 
 # ======================
-# COMMISSION TIMER WITH AUTO-BAN
+# COMMISSION TIMER
 # ======================
 
 def start_commission_timer(application, order_id, worker_id, total_amount):
@@ -341,7 +352,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📄 Sent to admin.")
 
     elif state == STATE_CLIENT_BOOKING_RECEIPT:
-        # Save booking receipt and create order
         order_id = f"YZL-{datetime.now().strftime('%Y%m%d')}-{str(uuid4())[:4].upper()}"
         try:
             sheet = get_worksheet("Orders")
@@ -353,7 +363,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Order create error: {e}")
 
-        # Broadcast to worker channel
         await context.bot.send_message(
             chat_id=WORKER_CHANNEL_ID,
             text=get_msg("job_post", "en", bureau=data["bureau"], city=data["city"], rate=HOURLY_RATE),
@@ -362,12 +371,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(get_msg("order_created", lang))
 
     elif state == STATE_CLIENT_FINAL_RECEIPT:
-        # Final payment received
         total = data["total"]
         worker_id = data["worker_id"]
         commission = int(total * COMMISSION_PERCENT)
 
-        # Update order as paid
         try:
             sheet = get_worksheet("Orders")
             records = sheet.get_all_records()
@@ -378,14 +385,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Order update error: {e}")
 
-        # Notify worker to send commission
         await context.bot.send_message(
             chat_id=worker_id,
             text=get_msg("commission_request", "en", total=total, commission=commission)
         )
         start_commission_timer(context.application, data["order_id"], worker_id, total)
 
-        # Ask for rating
         USER_STATE[user_id] = {"state": STATE_RATING, "data": {"worker_id": worker_id}, "lang": lang}
         await update.message.reply_text(get_msg("rate_worker", lang))
 
@@ -407,7 +412,6 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif state == STATE_WORKER_CHECKIN_LOCATION:
         data["checkin_location"] = (update.message.location.latitude, update.message.location.longitude)
-        # Mark check-in complete
         try:
             sheet = get_worksheet("Orders")
             records = sheet.get_all_records()
@@ -415,7 +419,6 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if record.get("Worker_ID") == str(user_id) and record.get("Status") == "Assigned":
                     sheet.update_cell(i, 6, "Checked In")
                     client_id = record.get("Client_TG_ID")
-                    # Notify client
                     asyncio.run_coroutine_threadsafe(
                         context.bot.send_message(
                             chat_id=int(client_id),
@@ -425,7 +428,7 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     break
         except Exception as e:
-            logger.error(f"Check-in update error: {e}")
+            logger.error(f"Check-in update error: {e})
 
         await update.message.reply_text(get_msg("checkin_complete", "en"))
 
@@ -443,7 +446,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("approve_"):
         parts = data.split("_")
         worker_tg_id = int(parts[1])
-        worker_id = parts[2]
         try:
             sheet = get_worksheet("Workers")
             records = sheet.get_all_records()
@@ -484,16 +486,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     break
             if order:
                 row_idx = records.index(order) + 2
-                sheet.update_cell(row_idx, 7, str(user_id))  # Worker_ID
-                sheet.update_cell(row_idx, 6, "Assigned")   # Status
+                sheet.update_cell(row_idx, 7, str(user_id))
+                sheet.update_cell(row_idx, 6, "Assigned")
 
-                # Notify client
                 await context.bot.send_message(
                     chat_id=int(client_id),
                     text=get_msg("worker_accepted", "en")
                 )
 
-                # Tell worker to check in
                 bureau = order["Bureau_Name"]
                 USER_STATE[user_id] = {
                     "state": STATE_WORKER_CHECKIN_PHOTO,
@@ -507,12 +507,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Accept error: {e}")
 
-    elif data.startswith("dispute_"):
-        # Handle dispute
-        pass
-
     elif data == "turn_on_location":
-        # Alert worker to re-enable location
         order_id = USER_STATE[user_id]["data"].get("order_id")
         if order_id:
             try:
