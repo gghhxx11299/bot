@@ -1697,14 +1697,15 @@ def telegram_webhook():
 # ======================
 def signal_handler(signum, frame):
     logger.info("Received shutdown signal. Cleaning up...")
+    # Stop the application if it's running
+    if 'application' in globals() and application.running:
+        application.stop()
     sys.exit(0)
-
 # ======================
 # MAIN
 # ======================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    webhook_url = os.getenv("WEBHOOK_URL")
     
     # Set up signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
@@ -1727,18 +1728,6 @@ if __name__ == "__main__":
     logger.info("Starting bot...")
     
     try:
-        # Check if there's an existing bot instance by trying to get updates with a small timeout
-        # This helps detect if another instance is already running
-        import telegram
-        bot = telegram.Bot(token=BOT_TOKEN)
-        
-        try:
-            # Try to get updates with offset to clear any pending updates
-            updates = bot.get_updates(timeout=1, limit=1)
-            logger.info(f"Cleared {len(updates)} pending updates")
-        except Exception as e:
-            logger.warning(f"Could not clear updates: {e}")
-        
         # Start the bot with polling
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
@@ -1746,10 +1735,6 @@ if __name__ == "__main__":
             stop_signals=None  # Don't handle signals (we do it manually)
         )
         
-    except telegram.error.Conflict as e:
-        logger.error(f"Bot conflict error: {e}")
-        logger.error("Another bot instance is already running. Shutting down...")
-        sys.exit(1)
     except Exception as e:
         logger.error(f"Failed to start bot: {e}")
         sys.exit(1)
