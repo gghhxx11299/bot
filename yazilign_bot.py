@@ -2198,7 +2198,7 @@ def run_flask_server():
         except Exception as e:
             return jsonify({"error": str(e)}), 500
     
-    # FIXED Webhook endpoint - CRITICAL FIX
+    # FIXED Webhook endpoint - Thread-safe processing
     @app.route('/telegram', methods=['POST'])
     def telegram_webhook():
         """Handle Telegram webhook updates"""
@@ -2212,7 +2212,15 @@ def run_flask_server():
                 logger.error("No JSON data received")
                 return jsonify({"status": "error", "message": "No JSON data"}), 400
             
-            logger.info(f"Update ID: {json_data.get('update_id')}")
+            update_id = json_data.get('update_id')
+            logger.info(f"Update ID: {update_id}")
+            
+            # Check if it's a message
+            if 'message' in json_data:
+                message = json_data['message']
+                user_id = message.get('from', {}).get('id')
+                text = message.get('text', '')
+                logger.info(f"Message from user {user_id}: {text}")
             
             # Convert to Update object
             update = Update.de_json(json_data, application.bot)
@@ -2221,22 +2229,31 @@ def run_flask_server():
                 logger.error("Failed to parse update")
                 return jsonify({"status": "error", "message": "Invalid update"}), 400
             
-            # Process update asynchronously
-            def process_async():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+            # FIX: Process update in a thread-safe way
+            # Create a new event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            async def process_update():
                 try:
-                    loop.run_until_complete(application.process_update(update))
-                    loop.close()
-                    logger.info(f"Successfully processed update {update.update_id}")
+                    # Initialize application if not already initialized
+                    if not application.initialized:
+                        await application.initialize()
+                    
+                    # Process the update
+                    await application.process_update(update)
+                    logger.info(f"Successfully processed update {update_id}")
                 except Exception as e:
-                    logger.error(f"Error processing update: {e}")
+                    logger.error(f"Error in process_update: {e}", exc_info=True)
+                finally:
+                    await application.shutdown()
             
-            # Start processing in background thread
-            Thread(target=process_async).start()
+            # Run the async function in the new loop
+            future = asyncio.ensure_future(process_update(), loop=loop)
+            loop.run_until_complete(future)
+            loop.close()
             
-            # Return 200 immediately to acknowledge receipt
-            return jsonify({"status": "ok", "update_id": update.update_id})
+            return jsonify({"status": "ok", "update_id": update_id})
             
         except Exception as e:
             logger.error(f"Webhook error: {e}", exc_info=True)
