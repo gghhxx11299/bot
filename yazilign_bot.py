@@ -1776,83 +1776,89 @@ async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ Broadcast error: {str(e)}")
 
 # ======================
-# BACKGROUND TASKS
+# BACKGROUND TASKS (Simplified without job queue)
 # ======================
-async def auto_flush_batches(context: ContextTypes.DEFAULT_TYPE):
-    try:
-        with BATCH_LOCK:
-            current_time = datetime.now()
-            time_since_flush = (current_time - LAST_BATCH_FLUSH).total_seconds()
-            
-            if time_since_flush >= BATCH_FLUSH_INTERVAL:
-                flush_all_batches()
-                logger.info("Auto-flushed batches")
-    except Exception as e:
-        logger.error(f"Auto-flush error: {e}")
-
-async def monitor_ghost_orders(context: ContextTypes.DEFAULT_TYPE):
-    try:
-        orders = get_worksheet_data_optimized("Orders")
-        current_time = datetime.now()
-        
-        for order in orders:
-            if order.get("Status") == "Assigned":
-                assignment_time_str = order.get("Assignment_Timestamp")
-                if assignment_time_str:
-                    try:
-                        assignment_time = datetime.fromisoformat(assignment_time_str.replace('Z', '+00:00'))
-                        hours_passed = (current_time - assignment_time).total_seconds() / 3600
-                        
-                        if hours_passed > 12:
-                            order_id = order.get("Order_ID")
-                            worker_id = order.get("Assigned_Worker")
-                            
-                            update_order_in_batch(order_id, {"Status": "Ghosted"})
-                            
-                            create_payout_in_batch([
-                                str(datetime.now()),
-                                order_id,
-                                str(worker_id),
-                                "100",
-                                "Ghost Payment",
-                                "Pending",
-                                ""
-                            ])
-                            
-                            logger.info(f"Order {order_id} marked as ghosted")
-                    except:
-                        continue
-    except Exception as e:
-        logger.error(f"Ghost monitor error: {e}")
-
-async def check_commission_deadlines(context: ContextTypes.DEFAULT_TYPE):
-    try:
-        payouts = get_worksheet_data_optimized("Payouts")
-        current_time = datetime.now()
-        
-        for payout in payouts:
-            if payout.get("Type") == "Commission" and payout.get("Status") == "Pending":
-                timestamp_str = payout.get("Timestamp")
-                if timestamp_str:
-                    try:
-                        payout_time = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-                        hours_passed = (current_time - payout_time).total_seconds() / 3600
-                        
-                        if hours_passed >= 2 and hours_passed < 3:
-                            worker_id = payout.get("Worker_ID")
-                            amount = payout.get("Amount", "0")
-                            
-                            try:
-                                await context.bot.send_message(
-                                    chat_id=int(worker_id),
-                                    text=f"⏰ Reminder: Commission of {amount} ETB due in 1 hour!\n⏰ አስታዋሽ፡ {amount} ብር ኮሚሽን በ1 ሰዓት ውስጥ ይከፈላል!"
-                                )
-                            except:
-                                pass
-                    except:
-                        continue
-    except Exception as e:
-        logger.error(f"Commission check error: {e}")
+def run_background_tasks():
+    """Run background tasks in a separate thread"""
+    def task_loop():
+        while True:
+            try:
+                # Auto-flush batches
+                with BATCH_LOCK:
+                    current_time = datetime.now()
+                    time_since_flush = (current_time - LAST_BATCH_FLUSH).total_seconds()
+                    
+                    if time_since_flush >= BATCH_FLUSH_INTERVAL:
+                        flush_all_batches()
+                        logger.info("Auto-flushed batches")
+                
+                # Monitor ghost orders (every hour)
+                if datetime.now().minute == 0:  # Run at the start of each hour
+                    orders = get_worksheet_data_optimized("Orders")
+                    current_time = datetime.now()
+                    
+                    for order in orders:
+                        if order.get("Status") == "Assigned":
+                            assignment_time_str = order.get("Assignment_Timestamp")
+                            if assignment_time_str:
+                                try:
+                                    assignment_time = datetime.fromisoformat(assignment_time_str.replace('Z', '+00:00'))
+                                    hours_passed = (current_time - assignment_time).total_seconds() / 3600
+                                    
+                                    if hours_passed > 12:
+                                        order_id = order.get("Order_ID")
+                                        worker_id = order.get("Assigned_Worker")
+                                        
+                                        update_order_in_batch(order_id, {"Status": "Ghosted"})
+                                        
+                                        create_payout_in_batch([
+                                            str(datetime.now()),
+                                            order_id,
+                                            str(worker_id),
+                                            "100",
+                                            "Ghost Payment",
+                                            "Pending",
+                                            ""
+                                        ])
+                                        
+                                        logger.info(f"Order {order_id} marked as ghosted")
+                                except:
+                                    continue
+                
+                # Check commission deadlines (every 30 minutes)
+                if datetime.now().minute % 30 == 0:  # Run every 30 minutes
+                    payouts = get_worksheet_data_optimized("Payouts")
+                    current_time = datetime.now()
+                    
+                    for payout in payouts:
+                        if payout.get("Type") == "Commission" and payout.get("Status") == "Pending":
+                            timestamp_str = payout.get("Timestamp")
+                            if timestamp_str:
+                                try:
+                                    payout_time = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                                    hours_passed = (current_time - payout_time).total_seconds() / 3600
+                                    
+                                    if hours_passed >= 2 and hours_passed < 3:
+                                        worker_id = payout.get("Worker_ID")
+                                        amount = payout.get("Amount", "0")
+                                        
+                                        # We can't send messages from background thread without context
+                                        # This would need to be handled differently
+                                        logger.info(f"Commission reminder for worker {worker_id}: {amount} ETB due in 1 hour")
+                                except:
+                                    continue
+                
+                # Sleep for 60 seconds before next iteration
+                time.sleep(60)
+                
+            except Exception as e:
+                logger.error(f"Background task error: {e}")
+                time.sleep(60)
+    
+    # Start background thread
+    bg_thread = Thread(target=task_loop, daemon=True)
+    bg_thread.start()
+    logger.info("✅ Background tasks started")
 
 # ======================
 # MAIN APPLICATION
@@ -1883,13 +1889,6 @@ def create_application():
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.LOCATION, handle_location))
     application.add_handler(CallbackQueryHandler(handle_callback))
-    
-    # Add job queue for background tasks
-    job_queue = application.job_queue
-    if job_queue:
-        job_queue.run_repeating(auto_flush_batches, interval=BATCH_FLUSH_INTERVAL, first=5)
-        job_queue.run_repeating(monitor_ghost_orders, interval=3600, first=10)
-        job_queue.run_repeating(check_commission_deadlines, interval=1800, first=15)
     
     logger.info("✅ Bot application created successfully")
     return application
@@ -1964,8 +1963,7 @@ def run_flask_server():
             logger.error(f"Error processing update: {e}")
     
     # Set webhook on startup
-    @app.before_first_request
-    def set_webhook():
+    def set_webhook_on_startup():
         """Set Telegram webhook when server starts"""
         try:
             # Determine webhook URL
@@ -1989,6 +1987,10 @@ def run_flask_server():
                 logger.info(f"Webhook set: {response.json()}")
         except Exception as e:
             logger.error(f"Failed to set webhook: {e}")
+    
+    # Set webhook and start background tasks
+    set_webhook_on_startup()
+    run_background_tasks()
     
     logger.info(f"🚀 Starting Flask server on port {PORT}")
     app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
