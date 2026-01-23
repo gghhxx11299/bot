@@ -29,6 +29,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 import time
 from collections import defaultdict
+import requests
 
 # ======================
 # GLOBAL STATE WITH LOCK
@@ -68,24 +69,40 @@ SHEET_ID = os.getenv("SHEET_ID", "").strip()
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").strip()
 
-# Google Sheets credentials
-GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON", "{}")
-if GOOGLE_CREDS_JSON and GOOGLE_CREDS_JSON != "{}":
-    GOOGLE_CREDS = json.loads(GOOGLE_CREDS_JSON)
-else:
-    GOOGLE_CREDS = {
-        "type": os.getenv("GOOGLE_CREDENTIALS_TYPE", "service_account"),
-        "project_id": os.getenv("GOOGLE_PROJECT_ID", ""),
-        "private_key_id": os.getenv("GOOGLE_PRIVATE_KEY_ID", ""),
-        "private_key": os.getenv("GOOGLE_PRIVATE_KEY", "").replace("\\n", "\n"),
-        "client_email": os.getenv("GOOGLE_CLIENT_EMAIL", ""),
-        "client_id": os.getenv("GOOGLE_CLIENT_ID", ""),
-        "auth_uri": os.getenv("GOOGLE_AUTH_URI", "https://accounts.google.com/o/oauth2/auth"),
-        "token_uri": os.getenv("GOOGLE_TOKEN_URI", "https://oauth2.googleapis.com/token"),
-        "auth_provider_x509_cert_url": os.getenv("GOOGLE_AUTH_PROVIDER_X509_CERT_URL", "https://www.googleapis.com/oauth2/v1/certs"),
-        "client_x509_cert_url": os.getenv("GOOGLE_CLIENT_X509_CERT_URL", ""),
-        "universe_domain": "googleapis.com"
-    }
+# ======================
+# GOOGLE CREDENTIALS FROM ENV
+# ======================
+def get_google_credentials():
+    """Get Google credentials from environment variables"""
+    try:
+        # Construct credentials dict from environment variables
+        creds_dict = {
+            "type": "service_account",
+            "project_id": os.getenv("GOOGLE_PROJECT_ID", ""),
+            "private_key_id": os.getenv("GOOGLE_PRIVATE_KEY_ID", ""),
+            "private_key": os.getenv("GOOGLE_PRIVATE_KEY", "").replace("\\n", "\n"),
+            "client_email": os.getenv("GOOGLE_CLIENT_EMAIL", ""),
+            "client_id": os.getenv("GOOGLE_CLIENT_ID", ""),
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_x509_cert_url": os.getenv("GOOGLE_CLIENT_X509_CERT_URL", ""),
+            "universe_domain": "googleapis.com"
+        }
+        
+        # Validate required fields
+        required_fields = ["private_key_id", "private_key", "client_email", "project_id"]
+        for field in required_fields:
+            if not creds_dict.get(field):
+                logger.error(f"Missing required Google credential: {field}")
+                return None
+        
+        return creds_dict
+    except Exception as e:
+        logger.error(f"Error constructing Google credentials: {e}")
+        return None
+
+GOOGLE_CREDS = get_google_credentials()
 
 ACTIVE_CITIES = ["Addis Ababa"]
 ALL_CITIES = ["Addis Ababa", "Hawassa", "Dire Dawa", "Mekelle", "Bahir Dar", "Adama", "Jimma", "Dessie"]
@@ -250,14 +267,21 @@ def invalidate_cache(sheet_name=None):
 # GOOGLE SHEETS FUNCTIONS
 # ======================
 def get_sheet_client():
+    """Get authenticated Google Sheets client"""
     try:
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(
-            GOOGLE_CREDS,
-            ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        )
+        if not GOOGLE_CREDS:
+            logger.error("Google credentials not available")
+            raise Exception("Google credentials not configured")
+        
+        # Add scope for drive access
+        scopes = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive.file",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(GOOGLE_CREDS, scopes)
         client = gspread.authorize(creds)
-        client.session.timeout = 30
-        client.session.retries = 3
         return client
     except Exception as e:
         logger.error(f"Failed to authenticate with Google Sheets: {e}")
@@ -519,6 +543,7 @@ def get_msg(key, **kwargs):
         "user_banned": "🚫 You are banned from using Yazilign. Contact {admin} for details.\n🚫 ከያዝልኝ አገልግሎት ታግደዋል። ለዝርዝር መረጃ {admin} ያነጋግሩ።",
         "city_not_active": "🚧 Not in {city} yet. Choose Addis Ababa.\n🚧 በ{city} አይሰራም። አዲስ አበባ ይምረጡ።",
         "invalid_city": "⚠️ City name must be text only (no numbers). Please re-enter.\n⚠️ ከተማ ስሙ ፊደል ብቻ መሆን አለበት (ቁጥር ያልተካተተ)። እንደገና ይፃፉ።",
+        "choose_city": "📍 Choose city:\n📍 ከተማ ይምረጡ፡",
         "enter_bureau": "📍 Type bureau name:\n📍 የቢሮ ስሙን ይፃፉ:",
         "send_location": "📍 Share live location:\n📍 ቦታዎን ያጋሩ:",
         "booking_fee": "Pay 100 ETB and upload receipt.\n100 ብር ይላክሱ እና ሲምበር ያስገቡ።",
@@ -1035,6 +1060,224 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text(get_msg("final_hours"))
     
+    elif state == STATE_DISPUTE_REASON:
+        reason = text
+        order_id = data.get("order_id")
+        
+        if order_id:
+            log_history_in_batch([
+                str(datetime.now()),
+                order_id,
+                "Client",
+                "Dispute_Submitted",
+                f"Reason: {reason}"
+            ])
+            
+            await update.message.reply_text(
+                get_msg("dispute_submitted"),
+                reply_markup=ReplyKeyboardMarkup([[get_msg("back_to_dashboard")]], resize_keyboard=True)
+            )
+            
+            update_persistent_user_state(user_id, STATE_NONE, {})
+    
+    elif state == STATE_RATING:
+        try:
+            rating = int(text.split('\n')[0].strip())
+            if 1 <= rating <= 5:
+                worker_id = data.get("worker_id")
+                
+                if worker_id:
+                    workers = get_worksheet_data_optimized("Workers", use_cache=False)
+                    for i, worker in enumerate(workers):
+                        if str(worker.get("Telegram_ID")) == str(worker_id):
+                            current_rating = float(worker.get("Rating", 3.0))
+                            new_rating = (current_rating + rating) / 2
+                            
+                            row_index = i + 2
+                            worksheet = get_worksheet("Workers")
+                            headers = worksheet.row_values(1)
+                            
+                            if "Rating" in headers:
+                                col_index = headers.index("Rating") + 1
+                                add_to_batch("Workers", "update", (row_index, col_index, str(round(new_rating, 1))))
+                            
+                            break
+                
+                await update.message.reply_text(
+                    get_msg("rating_thanks"),
+                    reply_markup=ReplyKeyboardMarkup([[get_msg("back_to_dashboard")]], resize_keyboard=True)
+                )
+                
+                update_persistent_user_state(user_id, STATE_NONE, {})
+            else:
+                await update.message.reply_text("Please enter a rating between 1 and 5.\nእባክዎን ከ1 እስከ 5 ያለው ደረጃ ያስገቡ።")
+        except ValueError:
+            await update.message.reply_text("Please enter a number between 1 and 5.\nእባክዎን ከ1 እስከ 5 ያለው ቁጥር ያስገቡ።")
+    
+    elif state == STATE_WORKER_EXCHANGE_REQUEST:
+        if "Request Exchange" in text or "መለዋወጥ ይጠይቁ" in text:
+            order_id = data.get("order_id")
+            
+            if order_id:
+                order = get_order_by_id(order_id)
+                if order:
+                    if can_worker_exchange(order, user_id):
+                        worker_info = get_worker_by_telegram_id(user_id)
+                        worker_name = worker_info.get("Full_Name", "Worker") if worker_info else "Worker"
+                        bureau = order.get("Bureau_Name", "the bureau")
+                        
+                        await broadcast_exchange_request(context, order_id, worker_name, bureau)
+                        
+                        await update.message.reply_text(
+                            "🔄 Exchange request sent! Other workers will be notified.\n🔄 የመለዋወጥ ጥያቄ ተልኳል! ሌሎች ሰራተኞች ይማገናሉ።",
+                            reply_markup=ReplyKeyboardMarkup([[get_msg("back_to_dashboard")]], resize_keyboard=True)
+                        )
+                    else:
+                        assignment_time_str = order.get("Assignment_Timestamp")
+                        if assignment_time_str:
+                            assignment_time = datetime.fromisoformat(assignment_time_str.replace('Z', '+00:00'))
+                            current_time = datetime.now()
+                            time_passed = (current_time - assignment_time).total_seconds()
+                            remaining_minutes = max(0, (EXCHANGE_TIMEOUT_HOURS * 3600 - time_passed) / 60)
+                            
+                            await update.message.reply_text(
+                                get_msg("exchange_time_wait", remaining=int(remaining_minutes)),
+                                reply_markup=ReplyKeyboardMarkup([[get_msg("back_to_dashboard")]], resize_keyboard=True)
+                            )
+    
+    elif state == STATE_WORKER_AT_FRONT:
+        if "I'm at the front of the line" in text or "የመስረቃ መስመር ላይ ነኝ" in text:
+            order_id = data.get("order_id")
+            
+            if order_id:
+                update_order_in_batch(order_id, {"Status": "At Front"})
+                
+                order = get_order_by_id(order_id)
+                if order:
+                    client_id = order.get("Client_TG_ID")
+                    if client_id:
+                        await context.bot.send_message(
+                            chat_id=int(client_id),
+                            text="✅ Worker is at the front of the line! Please proceed with your transaction.\n✅ ሰራተኛው የመስረቃ መስመር ላይ ነው! እባክዎን ንግድዎን ይቀጥሉ።"
+                        )
+                
+                await update.message.reply_text(
+                    "✅ Notified client! Waiting for client to complete transaction.\n✅ ደንበኛ ተማውቋል! ደንበኛ ንግዱን እንዲያጠናቅቅ በጥበቃ ላይ።",
+                    reply_markup=ReplyKeyboardMarkup([[get_msg("back_to_dashboard")]], resize_keyboard=True)
+                )
+                
+                update_persistent_user_state(user_id, STATE_WORKER_JOB_FINISHED, {"order_id": order_id})
+    
+    elif state == STATE_WORKER_JOB_FINISHED:
+        if "Job Finished" in text or "ስራ ጨርሰዋል" in text:
+            order_id = data.get("order_id")
+            
+            if order_id:
+                await update.message.reply_text(
+                    "📍 Please share your live location to confirm job completion:\n📍 ስራውን እንደጨረሱ ለማረጋገጥ እባክዎን ቀጥታ ቦታዎን ያጋሩ:",
+                    reply_markup=ReplyKeyboardMarkup([
+                        [KeyboardButton("📍 Share Live Location\n📍 ቦታዎን ያጋሩ", request_location=True)],
+                        [get_msg("back_to_dashboard")]
+                    ], resize_keyboard=True)
+                )
+    
+    elif state == STATE_CLIENT_CONFIRM_ARRIVAL:
+        if "Confirm Arrival" in text or "መጣ ተብሎ ያረጋግጡ" in text:
+            order_id = data.get("order_id")
+            
+            if order_id:
+                order = get_order_by_id(order_id)
+                if order:
+                    worker_id = order.get("Assigned_Worker")
+                    
+                    update_order_in_batch(order_id, {
+                        "Status": "Waiting for Payment",
+                        "Booking_Fee_Paid": "Yes"
+                    })
+                    
+                    await context.bot.send_message(
+                        chat_id=int(worker_id),
+                        text="✅ Client confirmed arrival! Please wait for them to complete their transaction.\n✅ ደንበኛ መጣ ብሎ አረጋግጧል! እባክዎን ንግዳቸውን እንዲያጠናቅቁ ይጠብቁ።"
+                    )
+                    
+                    await update.message.reply_text(
+                        "✅ Worker notified! Please proceed with your bureau transaction.\n✅ ሰራተኛ ተማውቋል! እባክዎን የቢሮ ንግድዎን ይቀጥሉ።",
+                        reply_markup=ReplyKeyboardMarkup([[get_msg("back_to_dashboard")]], resize_keyboard=True)
+                    )
+                    
+                    update_persistent_user_state(user_id, STATE_CLIENT_MONITORING, {"order_id": order_id, "worker_id": worker_id})
+    
+    elif state == STATE_CLIENT_MONITORING:
+        if "Request New Worker" in text or "ሌላ ሰራተኛ ይፈለግ" in text:
+            order_id = data.get("order_id")
+            
+            if order_id:
+                update_persistent_user_state(user_id, STATE_DISPUTE_REASON, {"order_id": order_id})
+                
+                keyboard = [
+                    [get_msg("reason_no_show")],
+                    [get_msg("reason_payment")],
+                    [get_msg("reason_fake_photo")],
+                    [get_msg("back_to_dashboard")]
+                ]
+                
+                await update.message.reply_text(
+                    get_msg("reassign_reason"),
+                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+                )
+    
+    elif state == STATE_WORKER_CHECKIN_PHOTO:
+        # Handled in photo handler
+        pass
+    
+    elif state == STATE_WORKER_UPDATE_PHONE:
+        data["new_phone"] = text
+        worker_info = get_worker_by_telegram_id(user_id)
+        
+        if worker_info:
+            workers = get_worksheet_data_optimized("Workers", use_cache=False)
+            for i, worker in enumerate(workers):
+                if str(worker.get("Telegram_ID")) == str(user_id):
+                    row_index = i + 2
+                    worksheet = get_worksheet("Workers")
+                    headers = worksheet.row_values(1)
+                    
+                    if "Phone_Number" in headers:
+                        col_index = headers.index("Phone_Number") + 1
+                        add_to_batch("Workers", "update", (row_index, col_index, text))
+                    
+                    await update.message.reply_text(
+                        "✅ Phone number updated!\n✅ የስልክ ቁጥር ተሻሽሏል!",
+                        reply_markup=ReplyKeyboardMarkup([[get_msg("back_to_dashboard")]], resize_keyboard=True)
+                    )
+                    
+                    update_persistent_user_state(user_id, STATE_NONE, {})
+                    break
+    
+    elif state == STATE_WORKER_UPDATE_TELEBIRR:
+        data["new_telebirr"] = text
+        worker_info = get_worker_by_telegram_id(user_id)
+        
+        if worker_info:
+            workers = get_worksheet_data_optimized("Workers", use_cache=False)
+            for i, worker in enumerate(workers):
+                if str(worker.get("Telegram_ID")) == str(user_id):
+                    row_index = i + 2
+                    worksheet = get_worksheet("Workers")
+                    headers = worksheet.row_values(1)
+                    
+                    if "Telebirr_number" in headers:
+                        col_index = headers.index("Telebirr_number") + 1
+                        add_to_batch("Workers", "update", (row_index, col_index, text))
+                    
+                    await update.message.reply_text(
+                        "✅ Telebirr number updated!\n✅ የቴሌቢር ቁጥር ተሻሽሏል!",
+                        reply_markup=ReplyKeyboardMarkup([[get_msg("back_to_dashboard")]], resize_keyboard=True)
+                    )
+                    
+                    update_persistent_user_state(user_id, STATE_NONE, {})
+                    break
+    
     else:
         await update.message.reply_text(
             "Please use the menu buttons.\nእባክዎን የምና ቁልፎችን ይጠቀሙ።",
@@ -1255,7 +1498,7 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         
         await update.message.reply_text(
-            "✅ Order created! Notifying workers...\n✅ ትዕዛዝ ተፈጸመ! ሠራተኞች ተሳይተዋል..."
+            "✅ Order created! Notifying workers...\n✅ ትዕዛዝ ተፈጥሯል! ሰራተኛ እየፈለግን ነው..."
         )
         
         await broadcast_job_to_workers(context, order_id, data.get("bureau", ""), data.get("city", ""))
@@ -1776,7 +2019,7 @@ async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ Broadcast error: {str(e)}")
 
 # ======================
-# BACKGROUND TASKS (Simplified without job queue)
+# BACKGROUND TASKS
 # ======================
 def run_background_tasks():
     """Run background tasks in a separate thread"""
@@ -1962,34 +2205,54 @@ def run_flask_server():
         except Exception as e:
             logger.error(f"Error processing update: {e}")
     
-    # Set webhook on startup
-    def set_webhook_on_startup():
-        """Set Telegram webhook when server starts"""
+    # Set webhook on server startup
+    def setup_webhook():
+        """Setup Telegram webhook"""
         try:
             # Determine webhook URL
             webhook_url = WEBHOOK_URL
             if not webhook_url and RENDER_EXTERNAL_URL:
                 webhook_url = f"{RENDER_EXTERNAL_URL}/telegram"
             
-            if webhook_url:
-                # Delete any existing webhook first
-                import requests
-                delete_url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook"
-                requests.get(delete_url)
+            if not webhook_url:
+                logger.warning("No webhook URL configured. Bot will run in polling mode.")
+                return False
+            
+            # Delete any existing webhook first
+            delete_url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook"
+            response = requests.get(delete_url, timeout=10)
+            logger.info(f"Delete webhook response: {response.json()}")
+            
+            # Set new webhook
+            set_url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
+            payload = {
+                "url": webhook_url,
+                "drop_pending_updates": True,
+                "max_connections": 40
+            }
+            response = requests.post(set_url, json=payload, timeout=10)
+            result = response.json()
+            
+            if result.get("ok"):
+                logger.info(f"✅ Webhook set successfully: {webhook_url}")
+                logger.info(f"Webhook info: {result}")
+                return True
+            else:
+                logger.error(f"❌ Failed to set webhook: {result}")
+                return False
                 
-                # Set new webhook
-                set_url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
-                payload = {
-                    "url": webhook_url,
-                    "drop_pending_updates": True
-                }
-                response = requests.post(set_url, json=payload)
-                logger.info(f"Webhook set: {response.json()}")
         except Exception as e:
             logger.error(f"Failed to set webhook: {e}")
+            return False
     
-    # Set webhook and start background tasks
-    set_webhook_on_startup()
+    # Setup webhook when Flask starts
+    with app.app_context():
+        if setup_webhook():
+            logger.info("✅ Webhook configured successfully")
+        else:
+            logger.warning("⚠️ Webhook not configured. Bot may not receive updates.")
+    
+    # Start background tasks
     run_background_tasks()
     
     logger.info(f"🚀 Starting Flask server on port {PORT}")
