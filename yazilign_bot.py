@@ -22,7 +22,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 import asyncio
 import signal
 import sys
@@ -34,7 +34,6 @@ import atexit
 # ======================
 STATE_LOCK = Lock()
 USER_STATE = {}
-HANDLERS_REGISTERED = False  # Track if handlers are already registered
 
 # ======================
 # CONFIGURATION
@@ -72,7 +71,6 @@ logging.basicConfig(
     level=logging.INFO,
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler('bot.log')
     ]
 )
 logger = logging.getLogger(__name__)
@@ -81,6 +79,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.WARNING)
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
 # ======================
 # USER STATES
@@ -344,41 +343,20 @@ def update_worker_rating(worker_id, rating):
 # ======================
 # COMMISSION TIMER
 # ======================
-def start_commission_timer(application, order_id, worker_id, total_amount):
+def start_commission_timer(order_id, worker_id, total_amount):
     commission = int(total_amount * COMMISSION_PERCENT)
-    def final_action():
-        ban_user(worker_id, reason="Missed commission")
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            async def send_alert():
-                try:
-                    await application.bot.send_message(
-                        chat_id=ADMIN_CHAT_ID,
-                        text=f"🚨 Auto-banned Worker {worker_id} for missing commission on {order_id}"
-                    )
-                except Exception as e:
-                    logger.error(f"Commission alert error: {e}")
-            
-            loop.run_until_complete(send_alert())
-            loop.close()
-        except Exception as e:
-            logger.error(f"Commission timer error: {e}")
-    
-    timer = Timer(COMMISSION_TIMEOUT_HOURS * 3600, final_action)
-    timer.daemon = True
-    timer.start()
-    return timer
+    logger.info(f"Started commission timer for worker {worker_id}, order {order_id}, commission: {commission} ETB")
+    return
 
 # ======================
 # LOCATION MONITOR
 # ======================
 async def check_worker_location(context: ContextTypes.DEFAULT_TYPE):
-    job = context.job
-    worker_id = job.data["worker_id"]
-    order_id = job.data["order_id"]
     try:
+        job = context.job
+        worker_id = job.data["worker_id"]
+        order_id = job.data["order_id"]
+        
         orders = get_worksheet_data("Orders")
         order = None
         for rec in orders:
@@ -388,6 +366,7 @@ async def check_worker_location(context: ContextTypes.DEFAULT_TYPE):
         if not order or order.get("Status") != "Assigned":
             job.schedule_removal()
             return
+        
         await context.bot.send_message(
             chat_id=int(worker_id),
             text="📍 Please share your current live location to confirm you're at the bureau.\n📍 እባክዎን በቢሮው ውስጥ እንደሆኑ የቀጥታ መገኛዎን ያጋሩ።",
@@ -1122,7 +1101,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"Commission notification error: {e}")
             
-            start_commission_timer(context.application, order_id, worker_id, total)
+            start_commission_timer(order_id, worker_id, total)
             
             USER_STATE[user_id] = {"state": STATE_RATING, "data": {"worker_id": worker_id}}
             await update.message.reply_text(
@@ -1770,123 +1749,10 @@ def health():
     return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
 
 # ======================
-# SINGLE INSTANCE APPLICATION
-# ======================
-class BotManager:
-    """Manages a single bot instance to prevent duplication."""
-    
-    _instance = None
-    _lock = Lock()
-    
-    def __new__(cls):
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = super(BotManager, cls).__new__(cls)
-                cls._instance.application = None
-                cls._instance.is_running = False
-            return cls._instance
-    
-    def setup_application(self):
-        """Setup application only once."""
-        if self.application is not None:
-            return self.application
-        
-        logger.info("Setting up Telegram bot application...")
-        
-        self.application = (
-            Application.builder()
-            .token(BOT_TOKEN)
-            .concurrent_updates(False)
-            .pool_timeout(10)
-            .read_timeout(10)
-            .write_timeout(10)
-            .build()
-        )
-        
-        global HANDLERS_REGISTERED
-        if not HANDLERS_REGISTERED:
-            self.application.add_handler(CommandHandler("start", start))
-            self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-            self.application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-            self.application.add_handler(MessageHandler(filters.LOCATION, handle_location))
-            self.application.add_handler(CallbackQueryHandler(handle_callback))
-            self.application.add_error_handler(error_handler)
-            HANDLERS_REGISTERED = True
-            logger.info("Handlers registered.")
-        
-        return self.application
-    
-    def start_polling(self):
-        """Start polling with conflict prevention."""
-        if self.is_running:
-            logger.warning("Bot is already running!")
-            return
-        
-        app = self.setup_application()
-        
-        # Clear any existing webhook first
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(app.bot.delete_webhook())
-            loop.close()
-        except Exception as e:
-            logger.warning(f"Could not delete webhook: {e}")
-        
-        # Wait to avoid immediate conflict
-        time.sleep(3)
-        
-        logger.info("Starting bot polling...")
-        self.is_running = True
-        
-        try:
-            app.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,
-                close_loop=False,
-                stop_signals=None,
-                poll_interval=0.5,
-                timeout=20,
-                bootstrap_retries=0,
-                read_timeout=20,
-                write_timeout=20
-            )
-        except Exception as e:
-            logger.error(f"Polling failed: {e}")
-            self.is_running = False
-            raise
-    
-    def stop(self):
-        """Stop the bot."""
-        if self.application and self.is_running:
-            logger.info("Stopping bot...")
-            self.application.stop()
-            self.application.shutdown()
-            self.is_running = False
-
-# ======================
-# CLEANUP HANDLER
-# ======================
-def cleanup():
-    """Cleanup resources."""
-    logger.info("Cleaning up...")
-    manager = BotManager()
-    manager.stop()
-
-# Register cleanup
-atexit.register(cleanup)
-
-def signal_handler(sig, frame):
-    """Handle shutdown signals."""
-    logger.info(f"Received signal {sig}")
-    cleanup()
-    sys.exit(0)
-
-# ======================
 # MAIN FUNCTION
 # ======================
-def main():
-    """Main entry point."""
+def run_bot():
+    """Run the Telegram bot with proper event loop handling."""
     required_vars = ["TELEGRAM_BOT_TOKEN_MAIN", "ADMIN_CHAT_ID", "SHEET_ID"]
     missing_vars = [var for var in required_vars if not os.getenv(var)]
     
@@ -1894,42 +1760,72 @@ def main():
         logger.error(f"Missing environment variables: {missing_vars}")
         sys.exit(1)
     
-    # Setup signal handlers
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    # Create application
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .concurrent_updates(False)
+        .pool_timeout(10)
+        .read_timeout(10)
+        .write_timeout(10)
+        .build()
+    )
     
-    # Start Flask in separate thread
-    def run_flask():
-        port = int(os.environ.get("PORT", 10000))
-        logger.info(f"Starting Flask on port {port}")
-        flask_app.run(
-            host="0.0.0.0", 
-            port=port, 
-            debug=False, 
-            use_reloader=False,
-            threaded=True
-        )
+    # Add handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(MessageHandler(filters.LOCATION, handle_location))
+    application.add_handler(CallbackQueryHandler(handle_callback))
+    application.add_error_handler(error_handler)
     
-    flask_thread = Thread(target=run_flask, daemon=True)
-    flask_thread.start()
+    logger.info("Bot application set up successfully")
     
-    # Give Flask time to start
-    time.sleep(2)
+    # Run bot with polling
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+        close_loop=False,
+        stop_signals=None,
+        poll_interval=0.5,
+        timeout=20
+    )
+
+def run_flask():
+    """Run Flask server."""
+    port = int(os.environ.get("PORT", 10000))
+    logger.info(f"Starting Flask server on port {port}")
+    flask_app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=False,
+        use_reloader=False,
+        threaded=True
+    )
+
+def main():
+    """Main entry point - run Flask and bot in separate processes."""
+    import multiprocessing
     
-    # Start bot
-    manager = BotManager()
+    # Start Flask in a separate process
+    flask_process = multiprocessing.Process(target=run_flask)
+    flask_process.daemon = True
+    flask_process.start()
     
+    logger.info("Flask server started")
+    
+    # Wait a moment for Flask to start
+    time.sleep(3)
+    
+    # Run bot in main process
     try:
-        manager.start_polling()
+        run_bot()
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
         logger.error(f"Bot failed: {e}")
         sys.exit(1)
 
-# ======================
-# ENTRY POINT
-# ======================
 if __name__ == "__main__":
-    logger.info("Starting bot in polling mode...")
+    logger.info("Starting application...")
     main()
