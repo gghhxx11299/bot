@@ -22,7 +22,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import asyncio
 import signal
 import sys
@@ -64,6 +64,7 @@ COMMISSION_PERCENT = 0.25
 COMMISSION_TIMEOUT_HOURS = 3
 MAX_WARNING_DISTANCE = 100
 MAX_ALLOWED_DISTANCE = 500
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 
 # Configure logging
 logging.basicConfig(
@@ -117,62 +118,66 @@ STATE_CLIENT_CONFIRM_ARRIVAL = 29
 STATE_WORKER_ACTIVE_JOB = 30
 
 # ======================
-# MESSAGES
+# BILINGUAL MESSAGES
 # ======================
-MESSAGES = {
-    "start": {"en": "Welcome! Are you a Client, Worker, or Admin?", "am": "እንኳን በደህና መጡ!"},
-    "cancel": {"en": "↩️ Back to Main Menu", "am": "↩️ ወደ ዋና ገጽ"},
-    "choose_city": {"en": "📍 Choose city:", "am": "📍 ከተማ ይምረጡ፡"},
-    "city_not_active": {"en": "🚧 Not in {city} yet. Choose Addis Ababa.", "am": "🚧 በ{city} አይሰራም። አዲስ አበባ ይምረጡ።"},
-    "invalid_city": {"en": "⚠️ City name must be text only (no numbers). Please re-enter.", "am": "⚠️ ከተማ ስሙ ፊደል ብቻ መሆን አለበት (ቁጥር ያልተካተተ)። እንደገና ይፃፉ።"},
-    "enter_bureau": {"en": "📍 Type bureau name:", "am": "📍 የቢሮ ስሙን ይፃፉ:"},
-    "send_location": {"en": "📍 Share live location:", "am": "📍 ቦታዎን ያጋሩ:"},
-    "booking_fee": {"en": "Pay 100 ETB and upload receipt.", "am": "100 ብር ይላክሱ እና ሲምበር ያስገቡ።"},
-    "worker_welcome": {"en": "👷 Send your full name:", "am": "👷 ሙሉ ስምዎን ይላኩ:"},
-    "worker_phone": {"en": "📱 Send phone number:", "am": "📱 ስልክ ቁጥርዎን ይላኩ:"},
-    "worker_fyda_front": {"en": "📸 Send FRONT of your Fyda (ID):", "am": "📸 የፍይዳዎን (ID) ገጽ ፎቶ ይላኩ:"},
-    "worker_fyda_back": {"en": "📸 Send BACK of your Fyda (ID):", "am": "📸 የፍይዳዎን (ID) ወለድ ፎቶ ይላኩ:"},
-    "admin_approve_worker": {"en": "🆕 New worker registration!\nName: {name}\nPhone: {phone}\nApprove?", "am": "🆕 አዲስ የሰራተኛ ምዝገባ!\nስም፡ {name}\nስልክ፡ {phone}"},
-    "worker_approved": {"en": "✅ Approved! You'll receive job alerts soon.", "am": "✅ ፀድቋል! በቅርቡ የስራ ማስታወቂያ ይደርስዎታል።"},
-    "worker_declined": {"en": "❌ Declined. Contact admin for details.", "am": "❌ ውድቅ ተደርጓል። ለተጨማሪ መረጃ አስተዳዳሪውን ያነጋግሩ።"},
-    "order_created": {"en": "✅ Order created! Searching for workers...", "am": "✅ ትዕዛዝ ተፈጥሯል! ሰራተኛ እየፈለግን ነው..."},
-    "job_post": {"en": "📍 {bureau}\n🏙️ {city}\n💰 100 ETB/hour\n[Accept]", "am": "📍 {bureau}\n🏙️ {city}\n💰 በሰዓት 100 ብር\n[ተቀበል]"},
-    "worker_accepted": {"en": "✅ Worker accepted! They'll check in soon.", "am": "✅ ሰራተኛ ተገኝቷል! በቅርቡ ያገኙዎታል።"},
-    "checkin_photo": {"en": "📸 Send photo of yourself in line at {bureau}", "am": "📸 በ{bureau} ውስጥ ያለውን ፎቶ ይላኩ"},
-    "checkin_location": {"en": "📍 Start live location sharing now", "am": "📍 አሁን የቀጥታ መገኛ ያጋሩ"},
-    "checkin_complete": {"en": "✅ Check-in complete! Client notified.", "am": "✅ የመግቢያ ሂደት ተጠናቅቋል!"},
-    "location_off_alert": {"en": "⚠️ Worker's location is off!", "am": "⚠️ የሰራተኛው መገኛ ጠፍቷል!"},
-    "turn_on_location": {"en": "Turn On Location", "am": "መገኛን አብራ"},
-    "location_alert_sent": {"en": "🔔 Request sent. Worker will be notified to turn on location.", "am": "🔔 ጥያቄ ተልኳል። ሰራተኛው መገኛውን እንዲያበራ መልዕክት ይደርሰዋል።"},
-    "final_hours": {"en": "How many hours did the worker wait? (Min 1, Max 12)", "am": "ለዚህ ሰራተኛ ምን ያህል ኮከብ ይሰጣሉ? (ከ1-5 ኮከቦች)"},
-    "final_payment": {"en": "💼 Pay {amount} ETB to worker and upload receipt.", "am": "💼 ለሰራተኛ {amount} ብር ይላክሱ እና ሲምበር ያስገቡ።"},
-    "payment_complete": {"en": "✅ Payment confirmed! Thank you.", "am": "✅ ክፍያ ተረጋግጧል! እናመሰግናለን።"},
-    "commission_request": {"en": "💰 You earned {total} ETB! Send 25% ({commission}) to @YourTelegram within 3 hours.", "am": "💰 {total} ብር ሰርተዋል! የ25% ኮሚሽን ({commission}) በ3 ሰዓት ውስጥ ለ @YourTelegram ይላኩ።"},
-    "commission_timeout": {"en": "⏰ 1 hour left to send your 25% commission!", "am": "⏰ የ25% ኮሚሽን ለመላክ 1 ሰዓት ብቻ ይቀራል!"},
-    "commission_missed": {"en": "🚨 You missed the commission deadline. Contact admin immediately.", "am": "🚨 የኮሚሽን መክፈያ ጊዜ አልፏል። በአስቸኳይ አስተዳዳሪውን ያነጋግሩ።"},
-    "request_new_worker": {"en": "🔄 Request New Worker", "am": "🔄 ሌላ ሰራተኛ ይፈለግ"},
-    "reassign_reason": {"en": "Why do you want a new worker?", "am": "ሌላ ሰራተኛ ለምን ፈለጉ?"},
-    "worker_reassigned": {"en": "🔁 Job reopened. A new worker will be assigned soon.", "am": "🔁 ስራው በድጋሚ ክፍት ሆኗል። በቅርቡ ሌላ ሰራተኛ ይመደባል።"},
-    "dispute_button": {"en": "⚠️ Dispute", "am": "⚠️ ቅሬታ"},
-    "dispute_reason": {"en": "Select dispute reason:", "am": "የቅሬታ ምክንያቱን ይምረጡ፡"},
-    "reason_no_show": {"en": "Worker didn't show", "am": "ሰራተኛው አልመጣም"},
-    "reason_payment": {"en": "Payment issue", "am": "የክፍያ ችግር"},
-    "reason_fake_photo": {"en": "Fake photo", "am": "ሀሰተኛ ፎቶ"},
-    "dispute_submitted": {"en": "📄 Dispute submitted. Admin will review shortly.", "am": "📄 ቅሬታዎ ቀርቧል። አስተዳዳሪው በቅርቡ ይመለከተዋል።"},
-    "rate_worker": {"en": "How would you rate this worker? (1-5 stars)", "am": "ለዚህ ሰራተኛ ምን ያህል ኮከብ ይሰጣሉ? (ከ1-5 ኮከቦች)"},
-    "rating_thanks": {"en": "Thank you! Your feedback helps us improve.", "am": "እናመሰግናለን! የእርስዎ አስተያየት አገልግሎታችንን ለማሻሻል ይረዳናል።"},
-    "user_banned": {"en": "🚫 You are banned from using Yazilign. Contact admin for details.", "am": "🚫 ከያዝልኝ አገልግሎት ታግደዋል። ለዝርዝር መረጃ አስተዳዳሪውን ያነጋግሩ።"},
-    "worker_far_warning": {"en": "⚠️ Worker moved >100m from job site!", "am": "⚠️ ሠራተኛው ከሥራ ቦታ በላይ 100ሜ ተንቀሳቅሷል!"},
-    "worker_far_ban": {"en": "🚨 Worker moved >500m! Order cancelled & banned.", "am": "🚨 ሠራተኛው ከሥራ ቦታ በላይ 500ሜ ተንቀሳቅሷል! ትዕዛዝ ተሰርዟል እና ታግዷል።"}
-}
-
 def get_msg(key, **kwargs):
-    en_text = MESSAGES[key].get("en", "")
-    am_text = MESSAGES[key].get("am", "")
+    messages = {
+        "start": "Welcome! Are you a Client, Worker, or Admin?\nእንኳን በደህና መጡ! ደንበኛ፣ ሰራተኛ ወይስ አስተዳዳሪ ነዎት?",
+        "cancel": "↩️ Back to Main Menu\n↩️ ወደ ዋና ገጽ",
+        "choose_city": "📍 Choose city:\n📍 ከተማ ይምረጡ፡",
+        "city_not_active": f"🚧 Not in {{city}} yet. Choose Addis Ababa.\n🚧 በ{{city}} አይሰራም። አዲስ አበባ ይምረጡ።",
+        "invalid_city": "⚠️ City name must be text only (no numbers). Please re-enter.\n⚠️ ከተማ ስሙ ፊደል ብቻ መሆን አለበት (ቁጥር ያልተካተተ)። እንደገና ይፃፉ።",
+        "enter_bureau": "📍 Type bureau name:\n📍 የቢሮ ስሙን ይፃፉ:",
+        "send_location": "📍 Share live location:\n📍 ቦታዎን ያጋሩ:",
+        "booking_fee": "Pay 100 ETB and upload receipt.\n100 ብር ይላክሱ እና ሲምበር ያስገቡ።",
+        "worker_welcome": "👷 Send your full name:\n👷 ሙሉ ስምዎን ይላኩ:",
+        "worker_phone": "📱 Send phone number:\n📱 ስልክ ቁጥርዎን ይላኩ:",
+        "worker_fyda_front": "📸 Send FRONT of your Fyda (ID):\n📸 የፍይዳዎን (ID) ገጽ ፎቶ ይላኩ:",
+        "worker_fyda_back": "📸 Send BACK of your Fyda (ID):\n📸 የፍይዳዎን (ID) ወለድ ፎቶ ይላኩ:",
+        "admin_approve_worker": "🆕 New worker registration!\nName: {name}\nPhone: {phone}\nApprove?\n🆕 አዲስ የሰራተኛ ምዝገባ!\nስም፡ {name}\nስልክ፡ {phone}\nፀድቀው ይወስኑ?",
+        "worker_approved": "✅ Approved! You'll receive job alerts soon.\n✅ ፀድቋል! በቅርቡ የስራ ማስታወቂያ ይደርስዎታል።",
+        "worker_declined": "❌ Declined. Contact admin for details.\n❌ ውድቅ ተደርጓል። ለተጨማሪ መረጃ አስተዳዳሪውን ያነጋግሩ።",
+        "order_created": "✅ Order created! Searching for workers...\n✅ ትዕዛዝ ተፈጥሯል! ሰራተኛ እየፈለግን ነው...",
+        "job_post": "📍 {bureau}\n🏙️ {city}\n💰 100 ETB/hour\n[Accept]\n📍 {bureau}\n🏙️ {city}\n💰 በሰዓት 100 ብር\n[ተቀበል]",
+        "worker_accepted": "✅ Worker accepted! They'll check in soon.\n✅ ሰራተኛ ተገኝቷል! በቅርቡ ያገኙዎታል።",
+        "checkin_photo": "📸 Send photo of yourself in line at {bureau}\n📸 በ{bureau} ውስጥ ያለውን ፎቶ ይላኩ",
+        "checkin_location": "📍 Start live location sharing now\n📍 አሁን የቀጥታ መገኛ ያጋሩ",
+        "checkin_complete": "✅ Check-in complete! Client notified.\n✅ የመግቢያ ሂደት ተጠናቅቋል!",
+        "location_off_alert": "⚠️ Worker's location is off!\n⚠️ የሰራተኛው መገኛ ጠፍቷል!",
+        "turn_on_location": "📍 Turn On Location\n📍 መገኛን አብራ",
+        "location_alert_sent": "🔔 Request sent. Worker will be notified to turn on location.\n🔔 ጥያቄ ተልኳል። ሰራተኛው መገኛውን እንዲያበራ መልዕክት ይደርሰዋል።",
+        "final_hours": "How many hours did the worker wait? (Min 1, Max 12)\nሰራተኛው ምን ያህል ሰዓት ቆየ? (ቢያንስ 1፣ ከፍተኛ 12)",
+        "final_payment": "💼 Pay {amount} ETB to worker and upload receipt.\n💼 ለሰራተኛ {amount} ብር ይላክሱ እና ሲምበር ያስገቡ።",
+        "payment_complete": "✅ Payment confirmed! Thank you.\n✅ ክፍያ ተረጋግጧል! እናመሰግናለን።",
+        "commission_request": "💰 You earned {total} ETB! Send 25% ({commission}) to @YourTelegram within 3 hours.\n💰 {total} ብር ሰርተዋል! የ25% ኮሚሽን ({commission}) በ3 ሰዓት ውስጥ ለ @YourTelegram ይላኩ።",
+        "commission_timeout": "⏰ 1 hour left to send your 25% commission!\n⏰ የ25% ኮሚሽን ለመላክ 1 ሰዓት ብቻ ይቀራል!",
+        "commission_missed": "🚨 You missed the commission deadline. Contact admin immediately.\n🚨 የኮሚሽን መክፈያ ጊዜ አልፏል። በአስቸኳይ አስተዳዳሪውን ያነጋግሩ።",
+        "request_new_worker": "🔄 Request New Worker\n🔄 ሌላ ሰራተኛ ይፈለግ",
+        "reassign_reason": "Why do you want a new worker?\nሌላ ሰራተኛ ለምን ፈለጉ?",
+        "worker_reassigned": "🔁 Job reopened. A new worker will be assigned soon.\n🔁 ስራው በድጋሚ ክፍት ሆኗል። በቅርቡ ሌላ ሰራተኛ ይመደባል።",
+        "dispute_button": "⚠️ Dispute\n⚠️ ቅሬታ",
+        "dispute_reason": "Select dispute reason:\nየቅሬታ ምክንያቱን ይምረጡ፡",
+        "reason_no_show": "Worker didn't show\nሰራተኛው አልመጣም",
+        "reason_payment": "Payment issue\nየክፍያ ችግር",
+        "reason_fake_photo": "Fake photo\nሀሰተኛ ፎቶ",
+        "dispute_submitted": "📄 Dispute submitted. Admin will review shortly.\n📄 ቅሬታዎ ቀርቧል። አስተዳዳሪው በቅርቡ ይመለከተዋል።",
+        "rate_worker": "How would you rate this worker? (1-5 stars)\nለዚህ ሰራተኛ ምን ያህል ኮከብ ይሰጣሉ? (ከ1-5 ኮከቦች)",
+        "rating_thanks": "Thank you! Your feedback helps us improve.\nእናመሰግናለን! የእርስዎ አስተያየት አገልግሎታችንን ለማሻሻል ይረዳናል።",
+        "user_banned": "🚫 You are banned from using Yazilign. Contact admin for details.\n🚫 ከያዝልኝ አገልግሎት ታግደዋል። ለዝርዝር መረጃ አስተዳዳሪውን ያነጋግሩ።",
+        "worker_far_warning": "⚠️ Worker moved >100m from job site!\n⚠️ ሠራተኛው ከሥራ ቦታ በላይ 100ሜ ተንቀሳቅሷል!",
+        "worker_far_ban": "🚨 Worker moved >500m! Order cancelled & banned.\n🚨 ሠራተኛው ከሥራ ቦታ በላይ 500ሜ ተንቀሳቅሷል! ትዕዛዝ ተሰርዟል እና ታግዷል።",
+        "menu_client_worker": "Client\nደንበኛ\n\nWorker\nሰራተኛ",
+        "menu_login_register": "✅ Register as New Worker\n✅ አዲስ ሰራተኛ መመዝገቢያ\n\n🔑 Login as Existing Worker\n🔑 የሚገኝ ሰራተኛ መግቢያ\n\n↩️ Back to Main Menu\n↩️ ወደ ዋና ገጽ",
+        "menu_worker_dashboard": "✅ Accept Jobs\n✅ ስራ ተቀበል\n\n✏️ Update Profile\n✏️ መግለጫ አዘምን\n\n📊 View Earnings\n📊 ገቢ ይመልከቱ\n\n↩️ Back to Main Menu\n↩️ ወደ ዋና ገጽ",
+        "menu_update_options": "📱 Phone\n📱 ስልክ\n\n💳 Telebirr\n💳 ቴሌቢር\n\n🏦 Bank\n🏦 ባንክ\n\n🔢 Account\n🔢 አካውንት\n\n📸 Fyda Photos\n📸 የፍይዳ ፎቶዎች\n\n↩️ Back to Main Menu\n↩️ ወደ ዋና ገጽ",
+        "menu_confirm_arrival": "✅ Confirm Arrival\n✅ መጣ ተብሎ ያረጋግጡ\n\n↩️ Back to Main Menu\n↩️ ወደ ዋና ገጽ",
+        "menu_front_of_line": "✅ I'm at the front of the line\n✅ የመስረቃ መስመር ላይ ነኝ\n\n↩️ Back to Main Menu\n↩️ ወደ ዋና ገጽ"
+    }
+    
+    msg = messages.get(key, key)
     if kwargs:
-        en_text = en_text.format(**kwargs)
-        am_text = am_text.format(**kwargs)
-    return f"{en_text}\n{am_text}"
+        msg = msg.format(**kwargs)
+    return msg
 
 # ======================
 # LOCATION CALCULATION
@@ -371,7 +376,7 @@ async def check_worker_location(context: ContextTypes.DEFAULT_TYPE):
             chat_id=int(worker_id),
             text="📍 Please share your current live location to confirm you're at the bureau.\n📍 እባክዎን በቢሮው ውስጥ እንደሆኑ የቀጥታ መገኛዎን ያጋሩ።",
             reply_markup=ReplyKeyboardMarkup(
-                [[KeyboardButton("📍 Share Live Location", request_location=True)]],
+                [[KeyboardButton("📍 Share Live Location\n📍 ቦታዎን ያጋሩ", request_location=True)]],
                 one_time_keyboard=True
             )
         )
@@ -397,6 +402,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ System error. Please try again.\n⚠️ ስርዓቱ ችግር አጋጥሟል። እንደገና ይሞክሩ።")
             return
         
+        # Clear any existing state
         USER_STATE[user_id] = {"state": STATE_NONE, "data": {}}
         
         legal_notice = (
@@ -408,19 +414,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• We are not liable for user disputes\n"
             "ℹ️ **የያዝልኝ አገልግሎት ውሎች**\n"
             "• ሠራተኞች ነፃ ተቋራጮች ናቸው\n"
-            "• አገልግሎቱ ተጠናቅቋል ብለው ብቻ ይክፍሉ\n"
+            "• አገልግሎቱ ተጠናቅቋል ብለው ብቻ ይክፈሉ\n"
             "• 25% ኮሚሽን ግዴታ ነው\n"
             "• ሀሰተኛ ፎቶ/ጠላት = የዘላለም ቅጣት\n"
             "• ተጠቃሚ ግጭቶች ላይ ኃላፊነት የለንም"
         )
         
-        keyboard = [["Client", "Worker"]]
+        keyboard = [["Client\nደንበኛ", "Worker\nሰራተኛ"]]
         if user_id == ADMIN_CHAT_ID:
-            keyboard.append(["Admin"])
+            keyboard.append(["Admin\nአስተዳዳሪ"])
         
         await update.message.reply_text(
-            f"{legal_notice}\n{get_msg('start')}",
-            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True),
+            f"{legal_notice}\n\n{get_msg('start')}",
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True),
             parse_mode="Markdown"
         )
 
@@ -442,7 +448,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = state_info["state"]
         data = state_info["data"]
         
-        if text == "↩️ Back to Main Menu" or text == "↩️ ወደ ዋና ገጽ":
+        # Handle "Back to Main Menu" from any state
+        if "Back to Main Menu" in text or "ወደ ዋና ገጽ" in text:
+            USER_STATE[user_id] = {"state": STATE_NONE, "data": {}}
             await start(update, context)
             return
         
@@ -454,46 +462,47 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await start(update, context)
             return
         
-        if text == "Client":
+        # Check if text contains our bilingual options (handle both languages)
+        if "Client" in text or "ደንበኛ" in text:
             USER_STATE[user_id] = {"state": STATE_CLIENT_CITY, "data": {}}
-            keyboard = [[city] for city in ALL_CITIES]
-            keyboard.append(["↩️ Back to Main Menu"])
+            keyboard = [[f"{city}\n{city}" if city != "Addis Ababa" else f"{city}\nአዲስ አበባ"] for city in ALL_CITIES]
+            keyboard.append([get_msg("cancel")])
             await update.message.reply_text(
                 get_msg("choose_city"),
-                reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+                reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
             )
         
-        elif text == "Worker":
+        elif "Worker" in text or "ሰራተኛ" in text:
             keyboard = [
-                ["✅ Register as New Worker"],
-                ["🔑 Login as Existing Worker"],
-                ["↩️ Back to Main Menu"]
+                ["✅ Register as New Worker\n✅ አዲስ ሰራተኛ መመዝገቢያ"],
+                ["🔑 Login as Existing Worker\n🔑 የሚገኝ ሰራተኛ መግቢያ"],
+                [get_msg("cancel")]
             ]
             await update.message.reply_text(
                 "👷 Choose an option:\n👷 ምርጫ ይምረጡ፡",
-                reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+                reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
             )
             USER_STATE[user_id] = {"state": STATE_WORKER_LOGIN_OR_REGISTER, "data": {}}
         
-        elif text == "Admin" and user_id == ADMIN_CHAT_ID:
+        elif ("Admin" in text or "አስተዳዳሪ" in text) and user_id == ADMIN_CHAT_ID:
             await update.message.reply_text(
-                "👑 Admin Panel\n"
-                "Commands:\n"
-                "/stats - Show statistics\n"
-                "/users - List all users\n"
-                "/orders - List all orders\n"
-                "/workers - List all workers"
+                "👑 Admin Panel\n👑 የአስተዳዳሪ ፓነል\n"
+                "Commands:\nትዕዛዞች፡\n"
+                "/stats - Show statistics\n/ስታትስ - ስታቲስቲክስ አሳይ\n"
+                "/users - List all users\n/ተጠቃሚዎች - ሁሉንም ተጠቃሚዎች አሰር\n"
+                "/orders - List all orders\n/ትዕዛዞች - ሁሉንም ትዕዛዞች አሰር\n"
+                "/workers - List all workers\n/ሰራተኞች - ሁሉንም ሰራተኞች አሰር"
             )
         
         elif state == STATE_WORKER_LOGIN_OR_REGISTER:
-            if text == "✅ Register as New Worker":
+            if "Register" in text or "መመዝገቢያ" in text:
                 USER_STATE[user_id] = {"state": STATE_WORKER_NAME, "data": {}}
                 await update.message.reply_text(
                     get_msg("worker_welcome"),
-                    reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                    reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True)
                 )
             
-            elif text == "🔑 Login as Existing Worker":
+            elif "Login" in text or "መግቢያ" in text:
                 try:
                     worker_info = None
                     records = get_worksheet_data("Workers")
@@ -506,31 +515,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         account_number = str(worker_info.get("Account_number", ""))
                         last_four = account_number[-4:] if len(account_number) >= 4 else account_number
                         dashboard_text = (
-                            f"👷‍♂️ **Worker Dashboard**\n"
-                            f"Name: {worker_info.get('Full_Name', 'N/A')}\n"
-                            f"Total Earnings: {worker_info.get('Total_Earnings', '0')} ETB\n"
-                            f"Completed Jobs: {worker_info.get('Total_Earnings', '0')} jobs\n"
-                            f"Rating: {worker_info.get('Rating', 'N/A')} ⭐\n"
-                            f"Telebirr: {worker_info.get('Telebirr_number', 'N/A')}\n"
-                            f"Bank: {worker_info.get('Bank_type', 'N/A')} ••••{last_four}\n"
-                            f"Choose an option:"
+                            f"👷‍♂️ **Worker Dashboard**\n👷‍♂️ **የሰራተኛ ዳሽቦርድ**\n"
+                            f"Name/ስም: {worker_info.get('Full_Name', 'N/A')}\n"
+                            f"Total Earnings/ጠቅላላ ገቢ: {worker_info.get('Total_Earnings', '0')} ETB\n"
+                            f"Completed Jobs/የተጠናቀቁ ስራዎች: {worker_info.get('Total_Earnings', '0')} jobs\n"
+                            f"Rating/ደረጃ: {worker_info.get('Rating', 'N/A')} ⭐\n"
+                            f"Telebirr/ቴሌቢር: {worker_info.get('Telebirr_number', 'N/A')}\n"
+                            f"Bank/ባንክ: {worker_info.get('Bank_type', 'N/A')} ••••{last_four}\n"
+                            f"Choose an option:\nምርጫ ይምረጡ፡"
                         )
                         keyboard = [
-                            ["✅ Accept Jobs"],
-                            ["✏️ Update Profile"],
-                            ["📊 View Earnings"],
-                            ["↩️ Back to Main Menu"]
+                            ["✅ Accept Jobs\n✅ ስራ ተቀበል"],
+                            ["✏️ Update Profile\n✏️ መግለጫ አዘምን"],
+                            ["📊 View Earnings\n📊 ገቢ ይመልከቱ"],
+                            [get_msg("cancel")]
                         ]
                         await update.message.reply_text(
                             dashboard_text,
-                            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True),
+                            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True),
                             parse_mode="Markdown"
                         )
                         USER_STATE[user_id] = {"state": STATE_WORKER_DASHBOARD, "data": {"worker_info": worker_info}}
                     else:
                         await update.message.reply_text(
                             "⚠️ No account found. Please register as a new worker.\n⚠️ ማህደር አልተገኘም። እባክዎን እንደ አዲስ ሠራተኛ ይመዝገቡ።",
-                            reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                            reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True)
                         )
                 except Exception as e:
                     logger.error(f"Worker login error: {e}")
@@ -538,113 +547,117 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         elif state == STATE_WORKER_DASHBOARD:
             worker_info = data.get("worker_info", {})
-            if text == "✅ Accept Jobs":
+            if "Accept Jobs" in text or "ስራ ተቀበል" in text:
                 await update.message.reply_text(
                     "✅ Ready for jobs! You'll receive alerts when clients post orders.\n✅ ለስራ ዝግጁ! ደንበኞች ስራ ሲለጡ ማሳወቂያ ይደርስዎታል።",
-                    reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                    reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True)
                 )
                 USER_STATE[user_id] = {"state": STATE_NONE, "data": {}}
             
-            elif text == "✏️ Update Profile":
+            elif "Update Profile" in text or "መግለጫ አዘምን" in text:
                 keyboard = [
-                    ["📱 Phone", "💳 Telebirr"],
-                    ["🏦 Bank", "🔢 Account"],
-                    ["📸 Fyda Photos"],
-                    ["↩️ Back to Main Menu"]
+                    ["📱 Phone\n📱 ስልክ", "💳 Telebirr\n💳 ቴሌቢር"],
+                    ["🏦 Bank\n🏦 ባንክ", "🔢 Account\n🔢 አካውንት"],
+                    ["📸 Fyda Photos\n📸 የፍይዳ ፎቶዎች"],
+                    [get_msg("cancel")]
                 ]
                 await update.message.reply_text(
                     "What would you like to update?\nየትኞቹን መረጃ ማሻሽል ይፈልጋሉ?",
-                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
                 )
                 USER_STATE[user_id] = {"state": STATE_WORKER_UPDATE_MENU, "data": worker_info}
             
-            elif text == "📊 View Earnings":
+            elif "View Earnings" in text or "ገቢ ይመልከቱ" in text:
                 total_earnings = int(worker_info.get('Total_Earnings', 0))
                 commission_paid = int(total_earnings * 0.25)
                 net_income = total_earnings - commission_paid
                 earnings_text = (
-                    f"💰 **Earnings Summary**\n"
-                    f"Total Earned: {total_earnings} ETB\n"
-                    f"Commission Paid: {commission_paid} ETB\n"
-                    f"Net Income: {net_income} ETB\n"
-                    f"Pending Payments: 0 ETB"
+                    f"💰 **Earnings Summary**\n💰 **የገቢ ማጠቃለያ**\n"
+                    f"Total Earned/ጠቅላላ ገቢ: {total_earnings} ETB\n"
+                    f"Commission Paid/የተከፈለ ኮሚሽን: {commission_paid} ETB\n"
+                    f"Net Income/ንጹህ ገቢ: {net_income} ETB\n"
+                    f"Pending Payments/በጥበቃ ላይ ያሉ ክፍያዎች: 0 ETB"
                 )
                 await update.message.reply_text(
                     earnings_text,
-                    reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True),
+                    reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True),
                     parse_mode="Markdown"
                 )
         
         elif state == STATE_WORKER_UPDATE_MENU:
-            if text == "📱 Phone":
+            if "Phone" in text or "ስልክ" in text:
                 USER_STATE[user_id] = {"state": STATE_WORKER_UPDATE_PHONE, "data": data}
                 await update.message.reply_text(
                     "📱 Enter new phone number:\n📱 የአዲስ ስልክ ቁጥር ይፃፉ፡",
-                    reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                    reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True)
                 )
-            elif text == "💳 Telebirr":
+            elif "Telebirr" in text or "ቴሌቢር" in text:
                 USER_STATE[user_id] = {"state": STATE_WORKER_UPDATE_TELEBIRR, "data": data}
                 await update.message.reply_text(
                     "📱 Enter new Telebirr number:\n📱 የአዲስ ቴሌቢር ቁጥር ይፃፉ፡",
-                    reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                    reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True)
                 )
-            elif text == "🏦 Bank":
+            elif "Bank" in text or "ባንክ" in text:
                 USER_STATE[user_id] = {"state": STATE_WORKER_UPDATE_BANK, "data": data}
-                keyboard = [[bank] for bank in BANKS]
-                keyboard.append(["↩️ Back to Main Menu"])
+                keyboard = [[f"{bank}\n{bank}"] for bank in BANKS]
+                keyboard.append([get_msg("cancel")])
                 await update.message.reply_text(
                     "🏦 Select new bank:\n🏦 የአዲስ ባንክ ይምረጡ፡",
-                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
                 )
-            elif text == "🔢 Account":
+            elif "Account" in text or "አካውንት" in text:
                 USER_STATE[user_id] = {"state": STATE_WORKER_UPDATE_ACCOUNT, "data": data}
                 await update.message.reply_text(
                     "🔢 Enter new account number:\n🔢 የአዲስ አካውንት ቁጥር ይፃፉ፡",
-                    reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                    reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True)
                 )
-            elif text == "📸 Fyda Photos":
+            elif "Fyda Photos" in text or "የፍይዳ ፎቶዎች" in text:
                 USER_STATE[user_id] = {"state": STATE_WORKER_UPDATE_FYDA, "data": data}
                 await update.message.reply_text(
                     get_msg("worker_fyda_front"),
-                    reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                    reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True)
                 )
         
         elif state == STATE_CLIENT_CITY:
-            if re.search(r'\d', text):
-                keyboard = [[city] for city in ALL_CITIES]
-                keyboard.append(["↩️ Back to Main Menu"])
+            # Extract city name (remove Amharic part if present)
+            city_name = text.split('\n')[0].strip()
+            
+            if re.search(r'\d', city_name):
+                keyboard = [[f"{city}\n{city}" if city != "Addis Ababa" else f"{city}\nአዲስ አበባ"] for city in ALL_CITIES]
+                keyboard.append([get_msg("cancel")])
                 await update.message.reply_text(get_msg("invalid_city"))
                 await update.message.reply_text(
                     get_msg("choose_city"),
-                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
                 )
                 return
             
-            if text not in ACTIVE_CITIES:
-                keyboard = [[city] for city in ALL_CITIES]
-                keyboard.append(["↩️ Back to Main Menu"])
-                await update.message.reply_text(get_msg("city_not_active", city=text))
+            if city_name not in ACTIVE_CITIES:
+                keyboard = [[f"{city}\n{city}" if city != "Addis Ababa" else f"{city}\nአዲስ አበባ"] for city in ALL_CITIES]
+                keyboard.append([get_msg("cancel")])
+                await update.message.reply_text(get_msg("city_not_active", city=city_name))
                 await update.message.reply_text(
                     get_msg("choose_city"),
-                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
                 )
                 return
             
-            data["city"] = text
+            data["city"] = city_name
             USER_STATE[user_id] = {"state": STATE_CLIENT_BUREAU, "data": data}
             await update.message.reply_text(
                 get_msg("enter_bureau"),
-                reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True)
             )
         
         elif state == STATE_CLIENT_BUREAU:
-            data["bureau"] = text
+            data["bureau"] = text.split('\n')[0].strip()
             USER_STATE[user_id] = {"state": STATE_CLIENT_LOCATION, "data": data}
             await update.message.reply_text(
                 get_msg("send_location"),
                 reply_markup=ReplyKeyboardMarkup(
-                    [[KeyboardButton("📍 Share Live Location", request_location=True)], ["↩️ Back to Main Menu"]],
-                    one_time_keyboard=True
+                    [[KeyboardButton("📍 Share Live Location\n📍 ቦታዎን ያጋሩ", request_location=True)], [get_msg("cancel")]],
+                    one_time_keyboard=True,
+                    resize_keyboard=True
                 )
             )
         
@@ -653,7 +666,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             USER_STATE[user_id] = {"state": STATE_WORKER_PHONE, "data": data}
             await update.message.reply_text(
                 get_msg("worker_phone"),
-                reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True)
             )
         
         elif state == STATE_WORKER_PHONE:
@@ -661,34 +674,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             USER_STATE[user_id] = {"state": STATE_WORKER_TELEBIRR, "data": data}
             await update.message.reply_text(
                 "📱 Enter your Telebirr number:\n📱 የቴሌቢር ቁጥርዎን ይፃፉ፡",
-                reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True)
             )
         
         elif state == STATE_WORKER_TELEBIRR:
             data["telebirr"] = text
             USER_STATE[user_id] = {"state": STATE_WORKER_BANK, "data": data}
-            keyboard = [[bank] for bank in BANKS]
-            keyboard.append(["↩️ Back to Main Menu"])
+            keyboard = [[f"{bank}\n{bank}"] for bank in BANKS]
+            keyboard.append([get_msg("cancel")])
             await update.message.reply_text(
                 "🏦 Select your bank:\n🏦 የባንክዎን ይምረጡ፡",
-                reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+                reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
             )
         
         elif state == STATE_WORKER_BANK:
-            if text not in BANKS:
-                keyboard = [[bank] for bank in BANKS]
-                keyboard.append(["↩️ Back to Main Menu"])
+            bank_name = text.split('\n')[0].strip()
+            if bank_name not in BANKS:
+                keyboard = [[f"{bank}\n{bank}"] for bank in BANKS]
+                keyboard.append([get_msg("cancel")])
                 await update.message.reply_text(
                     "⚠️ Please select from the bank list.\n⚠️ ከባንክ ዝርዝሩ ይምረጡ።",
-                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
                 )
                 return
             
-            data["bank_type"] = text
+            data["bank_type"] = bank_name
             USER_STATE[user_id] = {"state": STATE_WORKER_ACCOUNT_NUMBER, "data": data}
             await update.message.reply_text(
                 "🔢 Enter your account number:\n🔢 የአካውንት ቁጥርዎን ይፃፉ፡",
-                reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True)
             )
         
         elif state == STATE_WORKER_ACCOUNT_NUMBER:
@@ -696,7 +710,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             USER_STATE[user_id] = {"state": STATE_WORKER_ACCOUNT_HOLDER, "data": data}
             await update.message.reply_text(
                 "👤 Enter your account holder name (as on bank):\n👤 የአካውንት ባለቤት ስም (በባንክ የሚታየው)",
-                reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True)
             )
         
         elif state == STATE_WORKER_ACCOUNT_HOLDER:
@@ -704,7 +718,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             USER_STATE[user_id] = {"state": STATE_WORKER_FYDA_FRONT, "data": data}
             await update.message.reply_text(
                 get_msg("worker_fyda_front"),
-                reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True)
             )
         
         elif state == STATE_WORKER_UPDATE_PHONE:
@@ -772,12 +786,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("⚠️ Failed to update. Try again.\n⚠️ ማሻሻል አልተሳካም።")
         
         elif state == STATE_WORKER_UPDATE_BANK:
-            if text not in BANKS:
-                keyboard = [[bank] for bank in BANKS]
-                keyboard.append(["↩️ Back to Main Menu"])
+            bank_name = text.split('\n')[0].strip()
+            if bank_name not in BANKS:
+                keyboard = [[f"{bank}\n{bank}"] for bank in BANKS]
+                keyboard.append([get_msg("cancel")])
                 await update.message.reply_text(
                     "⚠️ Please select from the bank list.\n⚠️ ከባንክ ዝርዝሩ ይምረጡ።",
-                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
                 )
                 return
             
@@ -803,7 +818,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 for i, row in enumerate(all_values[1:], start=2):
                     if len(row) > 0 and str(row[3]) == str(user_id):
-                        worksheet.update_cell(i, bank_col + 1, text)
+                        worksheet.update_cell(i, bank_col + 1, bank_name)
                         break
                 
                 await update.message.reply_text("✅ Bank updated!\n✅ ባንክ ተሻሽሏል!")
@@ -846,7 +861,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         elif state == STATE_CLIENT_FINAL_HOURS:
             try:
-                hours = int(text)
+                hours = int(text.split('\n')[0].strip())
                 if 1 <= hours <= 12:
                     data["hours"] = hours
                     total = HOURLY_RATE * hours
@@ -854,7 +869,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     USER_STATE[user_id] = {"state": STATE_CLIENT_FINAL_RECEIPT, "data": data}
                     await update.message.reply_text(
                         get_msg("final_payment", amount=total - 100),
-                        reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                        reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True)
                     )
                 else:
                     await update.message.reply_text(get_msg("final_hours"))
@@ -863,7 +878,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         elif state == STATE_RATING:
             try:
-                rating = int(text)
+                rating = int(text.split('\n')[0].strip())
                 if 1 <= rating <= 5:
                     update_worker_rating(data["worker_id"], rating)
                     await update.message.reply_text(get_msg("rating_thanks"))
@@ -874,7 +889,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(get_msg("rate_worker"))
         
         elif state == STATE_WORKER_AT_FRONT:
-            if text == "✅ I'm at the front of the line":
+            if "I'm at the front" in text or "የመስረቃ መስመር ላይ" in text:
                 order_id = data["order_id"]
                 try:
                     orders = get_worksheet_data("Orders")
@@ -885,8 +900,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 chat_id=int(client_id),
                                 text="👷‍♂️ Your worker has reached the front of the line! Press 'Confirm Arrival' when you see them.\n👷‍♂️ ሠራተኛዎ የመስረቃ መስመር ላይ ደርሷል! ሲያዩት 'መጣ ተብሎ ያረጋግጡ' ይላኩ።",
                                 reply_markup=ReplyKeyboardMarkup(
-                                    [["✅ Confirm Arrival"], ["↩️ Back to Main Menu"]],
-                                    one_time_keyboard=True
+                                    [["✅ Confirm Arrival\n✅ መጣ ተብሎ ያረጋግጡ"], [get_msg("cancel")]],
+                                    one_time_keyboard=True,
+                                    resize_keyboard=True
                                 )
                             )
                             USER_STATE[int(client_id)] = {
@@ -898,7 +914,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logger.error(f"Arrival notify error: {e}")
         
         elif state == STATE_CLIENT_CONFIRM_ARRIVAL:
-            if text == "✅ Confirm Arrival":
+            if "Confirm Arrival" in text or "መጣ ተብሎ" in text:
                 order_id = data["order_id"]
                 worker_id = data["worker_id"]
                 try:
@@ -937,7 +953,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(
                 "Please use the menu buttons.\nእባክዎን የምና ቁልፎችን ይጠቀሙ።",
-                reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True)
             )
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -964,7 +980,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             USER_STATE[user_id] = {"state": STATE_WORKER_FYDA_BACK, "data": data}
             await update.message.reply_text(
                 get_msg("worker_fyda_back"),
-                reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True)
             )
         
         elif state == STATE_WORKER_FYDA_BACK:
@@ -1000,14 +1016,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     photo=data["fyda_front"],
                     caption=caption,
                     reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("✅ Approve", callback_data=f"approve_{worker_telegram_id}_{worker_id}")],
-                        [InlineKeyboardButton("❌ Decline", callback_data=f"decline_{worker_telegram_id}")]
+                        [InlineKeyboardButton("✅ Approve\n✅ ፀድቅ", callback_data=f"approve_{worker_telegram_id}_{worker_id}")],
+                        [InlineKeyboardButton("❌ Decline\n❌ ውድቅ", callback_data=f"decline_{worker_telegram_id}")]
                     ])
                 )
                 await context.bot.send_photo(
                     chat_id=ADMIN_CHAT_ID,
                     photo=data["fyda_back"],
-                    caption="Back of Fyda"
+                    caption="Back of Fyda\nየፍይዳ የኋላ ጎን"
                 )
                 await update.message.reply_text("📄 Sent to admin for approval.\n📄 ለአስተዳዳሪ ለፀድቂያ ተልኳል።")
                 USER_STATE[user_id] = {"state": STATE_NONE, "data": {}}
@@ -1037,11 +1053,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             
             caption = (
-                f"🆕 PAYMENT VERIFICATION NEEDED\n"
-                f"Client ID: {user_id}\n"
-                f"Worker: {worker_info.get('Full_Name', 'N/A')}\n"
-                f"Account Holder: {worker_info.get('Name_holder', 'N/A')}\n"
-                f"Amount: 100 ETB"
+                f"🆕 PAYMENT VERIFICATION NEEDED\n🆕 የክፍያ ማረጋገጫ ያስፈልጋል\n"
+                f"Client ID/ደንበኛ መታወቂያ: {user_id}\n"
+                f"Worker/ሰራተኛ: {worker_info.get('Full_Name', 'N/A')}\n"
+                f"Account Holder/አካውንት ባለቤት: {worker_info.get('Name_holder', 'N/A')}\n"
+                f"Amount/መጠን: 100 ETB"
             )
             try:
                 await context.bot.send_photo(
@@ -1049,8 +1065,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     photo=photo_file_id,
                     caption=caption,
                     reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("✅ Verify Payment", callback_data=f"verify_{user_id}_{worker_id}")],
-                        [InlineKeyboardButton("❌ Reject Receipt", callback_data=f"reject_{user_id}")]
+                        [InlineKeyboardButton("✅ Verify Payment\n✅ ክፍያ አረጋግጥ", callback_data=f"verify_{user_id}_{worker_id}")],
+                        [InlineKeyboardButton("❌ Reject Receipt\n❌ ሲምበር ውድቅ", callback_data=f"reject_{user_id}")]
                     ])
                 )
                 await update.message.reply_text("📄 Receipt sent to admin for verification.\n📄 ሲምበር ለአስተዳዳሪ ምርመራ ተልኳል።")
@@ -1106,7 +1122,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             USER_STATE[user_id] = {"state": STATE_RATING, "data": {"worker_id": worker_id}}
             await update.message.reply_text(
                 get_msg("rate_worker"),
-                reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True)
             )
         
         elif state == STATE_WORKER_CHECKIN_PHOTO:
@@ -1115,8 +1131,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 get_msg("checkin_location"),
                 reply_markup=ReplyKeyboardMarkup(
-                    [[KeyboardButton("📍 Share Live Location", request_location=True)], ["↩️ Back to Main Menu"]],
-                    one_time_keyboard=True
+                    [[KeyboardButton("📍 Share Live Location\n📍 ቦታዎን ያጋሩ", request_location=True)], [get_msg("cancel")]],
+                    one_time_keyboard=True,
+                    resize_keyboard=True
                 )
             )
         
@@ -1124,13 +1141,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             USER_STATE[user_id] = {"state": STATE_WORKER_FYDA_FRONT, "data": {}}
             await update.message.reply_text(
                 get_msg("worker_fyda_front"),
-                reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True)
             )
         
         else:
             await update.message.reply_text(
                 "I don't understand what to do with this photo. Please use the menu.\nይህን ፎቶ ምን ማድረግ እንዳለብኝ አላውቅም። እባክዎን ምናውን ይጠቀሙ።",
-                reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True)
             )
 
 async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1202,7 +1219,7 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 chat_id=int(worker.get("Telegram_ID", 0)),
                                 text=get_msg("job_post", bureau=data.get("bureau", ""), city=data.get("city", "")),
                                 reply_markup=InlineKeyboardMarkup([
-                                    [InlineKeyboardButton("Accept", callback_data=f"accept_{order_id}_{user_id}")]
+                                    [InlineKeyboardButton("Accept\nተቀበል", callback_data=f"accept_{order_id}_{user_id}")]
                                 ])
                             )
                             notified_count += 1
@@ -1344,12 +1361,12 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             if order_id:
                 keyboard = [
-                    ["✅ I'm at the front of the line"],
-                    ["↩️ Back to Main Menu"]
+                    ["✅ I'm at the front of the line\n✅ የመስረቃ መስመር ላይ ነኝ"],
+                    [get_msg("cancel")]
                 ]
                 await update.message.reply_text(
                     "✅ Check-in complete! When you reach the front of the line, press the button below.\n✅ የመግቢያ ሂደት ተጠናቅቋል! የመስረቃ መስመር ላይ ሲደርሱ ከታች ያለውን ቁልፍ ይጫኑ።",
-                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+                    reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
                 )
                 USER_STATE[user_id] = {"state": STATE_WORKER_AT_FRONT, "data": {"order_id": order_id}}
             else:
@@ -1360,7 +1377,7 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(
                 "Location received, but I'm not sure what to do with it. Please use the menu.\nመገኛዎ ተቀበልኩ፣ ነገር ግን ምን ማድረግ እንዳለብኝ አላውቅም። እባክዎን ምናውን ይጠቀሙ።",
-                reply_markup=ReplyKeyboardMarkup([["↩️ Back to Main Menu"]], one_time_keyboard=True)
+                reply_markup=ReplyKeyboardMarkup([[get_msg("cancel")]], one_time_keyboard=True, resize_keyboard=True)
             )
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1382,7 +1399,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if data.startswith("accept_"):
             parts = data.split("_")
             if len(parts) < 3:
-                await query.edit_message_text("⚠️ Invalid job data.")
+                await query.edit_message_text("⚠️ Invalid job data.\n⚠️ የማያገለግል የስራ መረጃ።")
                 return
             
             order_id = parts[1]
@@ -1395,7 +1412,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 all_values = worksheet.get_all_values()
                 
                 if not all_values or len(all_values) < 2:
-                    await query.edit_message_text("⚠️ No orders found.")
+                    await query.edit_message_text("⚠️ No orders found.\n⚠️ ምንም ትዕዛዞች አልተገኙም።")
                     return
                 
                 headers = all_values[0]
@@ -1512,11 +1529,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     last_four = account_number[-4:] if len(account_number) >= 4 else account_number
                     
                     contact_msg = (
-                        f"👷‍♂️ Worker found!\n"
-                        f"Name: {worker_info.get('Full_Name', 'N/A')}\n"
-                        f"Phone: {worker_info.get('Phone_Number', 'N/A')}\n"
-                        f"Telebirr: {worker_info.get('Telebirr_number', 'N/A')}\n"
-                        f"Bank: {worker_info.get('Bank_type', 'N/A')} ••••{last_four}"
+                        f"👷‍♂️ Worker found!\n👷‍♂️ ሰራተኛ ተገኝቷል!\n"
+                        f"Name/ስም: {worker_info.get('Full_Name', 'N/A')}\n"
+                        f"Phone/ስልክ: {worker_info.get('Phone_Number', 'N/A')}\n"
+                        f"Telebirr/ቴሌቢር: {worker_info.get('Telebirr_number', 'N/A')}\n"
+                        f"Bank/ባንክ: {worker_info.get('Bank_type', 'N/A')} ••••{last_four}"
                     )
                     await context.bot.send_message(chat_id=int(client_id), text=contact_msg)
                     await context.bot.send_message(
@@ -1565,7 +1582,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 try:
                     await query.edit_message_text(
-                        text=f"✅ You've accepted this job!\n📍 Bureau: {bureau}\n⏰ Please proceed to check-in.",
+                        text=f"✅ You've accepted this job!\n✅ ይህን ስራ ተቀብለዋል!\n📍 Bureau/ቢሮ: {bureau}\n⏰ Please proceed to check-in.\n⏰ እባክዎን ወደ ምዝገባ ይሂዱ።",
                         reply_markup=None
                     )
                 except Exception as e:
@@ -1736,23 +1753,34 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Exception while handling an update:", exc_info=context.error)
 
 # ======================
-# SIMPLE FLASK APP
+# FLASK APP WITH WEBHOOK
 # ======================
 flask_app = Flask(__name__)
 
 @flask_app.route("/")
 def home():
-    return jsonify({"status": "Bot is running"})
+    return jsonify({"status": "Yazilign Bot is running", "timestamp": datetime.now().isoformat()})
 
 @flask_app.route("/health")
 def health():
     return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
 
+@flask_app.route("/webhook", methods=["POST"])
+def webhook():
+    """Webhook endpoint for Telegram"""
+    if request.method == "POST":
+        update = Update.de_json(request.get_json(force=True), bot_app.bot)
+        asyncio.run_coroutine_threadsafe(
+            bot_app.process_update(update),
+            bot_app._loop
+        )
+    return jsonify({"status": "ok"})
+
 # ======================
-# MAIN FUNCTION
+# MAIN APPLICATION SETUP
 # ======================
-def run_bot():
-    """Run the Telegram bot with proper event loop handling."""
+def setup_bot_application():
+    """Set up the Telegram bot application"""
     required_vars = ["TELEGRAM_BOT_TOKEN_MAIN", "ADMIN_CHAT_ID", "SHEET_ID"]
     missing_vars = [var for var in required_vars if not os.getenv(var)]
     
@@ -1764,10 +1792,10 @@ def run_bot():
     application = (
         Application.builder()
         .token(BOT_TOKEN)
-        .concurrent_updates(False)
-        .pool_timeout(10)
-        .read_timeout(10)
-        .write_timeout(10)
+        .concurrent_updates(True)
+        .pool_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
         .build()
     )
     
@@ -1780,6 +1808,72 @@ def run_bot():
     application.add_error_handler(error_handler)
     
     logger.info("Bot application set up successfully")
+    return application
+
+async def setup_webhook(application: Application):
+    """Set up webhook for the bot"""
+    if WEBHOOK_URL:
+        webhook_url = f"{WEBHOOK_URL.rstrip('/')}/webhook"
+        logger.info(f"Setting webhook to: {webhook_url}")
+        
+        try:
+            await application.bot.set_webhook(
+                url=webhook_url,
+                drop_pending_updates=True,
+                allowed_updates=Update.ALL_TYPES
+            )
+            logger.info("Webhook set successfully")
+        except Exception as e:
+            logger.error(f"Failed to set webhook: {e}")
+            raise
+    else:
+        logger.warning("WEBHOOK_URL not set, using polling instead")
+
+def run_bot_with_webhook():
+    """Run bot with webhook (for production)"""
+    import threading
+    
+    global bot_app
+    bot_app = setup_bot_application()
+    
+    # Get event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    # Set up webhook
+    loop.run_until_complete(setup_webhook(bot_app))
+    
+    # Run Flask in background thread
+    def run_flask():
+        port = int(os.environ.get("PORT", 10000))
+        logger.info(f"Starting Flask server on port {port}")
+        flask_app.run(
+            host="0.0.0.0",
+            port=port,
+            debug=False,
+            use_reloader=False,
+            threaded=True
+        )
+    
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    logger.info("Flask server started in background thread")
+    
+    # Start bot
+    bot_app.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+        close_loop=False,
+        stop_signals=None,
+        poll_interval=0.5,
+        timeout=20
+    )
+
+def run_bot_with_polling():
+    """Run bot with polling (for development)"""
+    application = setup_bot_application()
+    
+    logger.info("Starting bot with polling...")
     
     # Run bot with polling
     application.run_polling(
@@ -1791,41 +1885,16 @@ def run_bot():
         timeout=20
     )
 
-def run_flask():
-    """Run Flask server."""
-    port = int(os.environ.get("PORT", 10000))
-    logger.info(f"Starting Flask server on port {port}")
-    flask_app.run(
-        host="0.0.0.0",
-        port=port,
-        debug=False,
-        use_reloader=False,
-        threaded=True
-    )
-
 def main():
-    """Main entry point - run Flask and bot in separate processes."""
-    import multiprocessing
+    """Main entry point"""
+    logger.info("Starting Yazilign Bot...")
     
-    # Start Flask in a separate process
-    flask_process = multiprocessing.Process(target=run_flask)
-    flask_process.daemon = True
-    flask_process.start()
-    
-    logger.info("Flask server started")
-    
-    # Wait a moment for Flask to start
-    time.sleep(3)
-    
-    # Run bot in main process
-    try:
-        run_bot()
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.error(f"Bot failed: {e}")
-        sys.exit(1)
+    if WEBHOOK_URL:
+        logger.info("Using webhook mode")
+        run_bot_with_webhook()
+    else:
+        logger.info("Using polling mode")
+        run_bot_with_polling()
 
 if __name__ == "__main__":
-    logger.info("Starting application...")
     main()
