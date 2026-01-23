@@ -2134,43 +2134,40 @@ def create_application():
     logger.info("✅ Bot application created successfully")
     return application
 
-def run_flask_server():
-    """Run Flask server with POLLING instead of webhook"""
-    app = Flask(__name__)
+def run_simple_bot():
+    """Run bot without Flask - simplest version"""
+    logger.info("🤖 Creating bot application...")
     
-    @app.route('/')
-    def home():
-        return jsonify({
-            "status": "Yazilign Bot Running (Polling Mode)",
-            "timestamp": datetime.now().isoformat()
-        })
+    # Create application
+    application = create_application()
     
-    @app.route('/health')
-    def health():
-        return jsonify({"status": "healthy"})
+    # Start background tasks
+    run_background_tasks()
     
-    logger.info(f"🚀 Starting Flask server on port {PORT}")
+    logger.info("🤖 Starting bot in polling mode...")
     
-    # Create and start bot in polling mode
-    def start_bot():
-        # Wait a moment for Flask to start
-        time.sleep(2)
-        
-        # Create application
-        application = create_application()
-        
-        logger.info("🤖 Starting bot in polling mode...")
-        try:
-            application.run_polling(
-                drop_pending_updates=True,
-                allowed_updates=["message", "callback_query", "edited_message"]
-            )
-        except Exception as e:
-            logger.error(f"Bot error: {e}")
+    # Start polling
+    application.run_polling(
+        drop_pending_updates=True,
+        allowed_updates=["message", "callback_query", "edited_message"],
+        timeout=30,
+        pool_timeout=30,
+        read_timeout=30,
+        write_timeout=30
+    )
+
+def main():
+    """Main entry point"""
+    logger.info("=" * 60)
+    logger.info("🚀 YAZILIGN BOT STARTING")
+    logger.info(f"🤖 Token: {'*' * 20}{BOT_TOKEN[-4:] if BOT_TOKEN else 'NONE'}")
+    logger.info(f"👑 Admin: {ADMIN_CHAT_ID}")
+    logger.info(f"📊 Sheet: {SHEET_ID[:10]}..." if SHEET_ID else "📊 Sheet: NONE")
+    logger.info(f"🌐 Port: {PORT}")
+    logger.info("=" * 60)
     
-    # Start bot in separate thread
-    bot_thread = Thread(target=start_bot, daemon=True)
-    bot_thread.start()
-    
-    # Start Flask server
-    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
+    # Run simple bot
+    run_simple_bot()
+
+if __name__ == "__main__":
+    main()
