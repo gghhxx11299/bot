@@ -773,7 +773,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• ሠራተኞች ነፃ ተቋራጮች ናቸው\n"
         "• አገልግሎቱ ተጠናቅቋል ብለው ብቻ ይክፈሉ\n"
         "• 25% ኮሚሽን ግዴታ ነው\n"
-        "• ሀሰተኛ ፎቶ/ጠላት = የዘላለም ቅጣት\n"
+        "• ሀሰተኛ ፎቶ/ጠላት = የዘላለም �ቅጣት\n"
         "• ተጠቃሚ ግጭቶች ላይ ኃላፊነት የለንም"
     )
     
@@ -2137,7 +2137,7 @@ def create_application():
     return application
 
 # ======================
-# FLASK SERVER
+# FLASK SERVER WITH ENHANCED DEBUGGING
 # ======================
 def run_flask_server():
     """Run Flask server with webhook support"""
@@ -2153,7 +2153,8 @@ def run_flask_server():
             "timestamp": datetime.now().isoformat(),
             "users_in_memory": len(USER_STATE),
             "batch_queue": {k: len(v) for k, v in BATCH_OPERATIONS.items()},
-            "cache_status": {k: "valid" if v["data"] else "invalid" for k, v in SHEETS_CACHE.items()}
+            "cache_status": {k: "valid" if v["data"] else "invalid" for k, v in SHEETS_CACHE.items()},
+            "webhook_endpoint": f"{RENDER_EXTERNAL_URL or WEBHOOK_URL}/telegram"
         })
     
     @app.route('/health')
@@ -2162,6 +2163,7 @@ def run_flask_server():
             "status": "healthy",
             "bot_token": bool(BOT_TOKEN),
             "sheet_id": bool(SHEET_ID),
+            "google_creds": bool(GOOGLE_CREDS),
             "batch_operations": sum(len(ops) for ops in BATCH_OPERATIONS.values())
         })
     
@@ -2178,23 +2180,79 @@ def run_flask_server():
         invalidate_cache()
         return jsonify({"status": "cache_cleared"})
     
-    # Webhook endpoint
-    @app.route('/telegram', methods=['POST'])
+    @app.route('/debug-webhook', methods=['GET'])
+    def debug_webhook():
+        """Debug webhook status"""
+        try:
+            # Get current webhook info from Telegram
+            response = requests.get(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo",
+                timeout=10
+            )
+            webhook_info = response.json()
+            
+            return jsonify({
+                "telegram_webhook_info": webhook_info,
+                "expected_webhook_url": f"{RENDER_EXTERNAL_URL or WEBHOOK_URL}/telegram",
+                "bot_token_exists": bool(BOT_TOKEN),
+                "timestamp": datetime.now().isoformat()
+            })
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+    
+    # Webhook endpoint WITH DEBUG LOGGING
+    @app.route('/telegram', methods=['POST', 'GET'])
     def telegram_webhook():
         """Handle Telegram webhook updates"""
+        logger.info(f"=== WEBHOOK CALLED ===")
+        logger.info(f"Method: {request.method}")
+        
+        if request.method == 'GET':
+            # Telegram might ping the endpoint
+            return jsonify({"status": "ready", "method": "GET", "endpoint": "/telegram"})
+        
         if request.headers.get('content-type') == 'application/json':
             json_string = request.get_data().decode('utf-8')
-            update = Update.de_json(json_string, application.bot)
+            logger.info(f"Raw data received: {len(json_string)} chars")
             
-            # Process update in a separate thread to avoid blocking
-            Thread(target=process_update_thread, args=(application, update)).start()
+            # Log message details if available
+            try:
+                data = json.loads(json_string)
+                logger.info(f"Parsed JSON keys: {list(data.keys())}")
+                
+                if 'message' in data:
+                    msg = data['message']
+                    user_id = msg.get('from', {}).get('id')
+                    text = msg.get('text')
+                    logger.info(f"Message from user {user_id}: {text}")
+                elif 'callback_query' in data:
+                    callback = data['callback_query']
+                    user_id = callback.get('from', {}).get('id')
+                    callback_data = callback.get('data')
+                    logger.info(f"Callback from user {user_id}: {callback_data}")
+            except Exception as e:
+                logger.error(f"Error parsing JSON: {e}")
             
-            return jsonify({"status": "ok"})
-        return jsonify({"status": "error", "message": "Invalid content type"}), 400
+            try:
+                update = Update.de_json(json_string, application.bot)
+                logger.info(f"Successfully parsed update: {update.update_id}")
+                
+                # Process update in a separate thread
+                Thread(target=process_update_thread, args=(application, update)).start()
+                
+                return jsonify({"status": "ok", "processed": True, "update_id": update.update_id})
+            except Exception as e:
+                logger.error(f"Error processing update: {e}", exc_info=True)
+                return jsonify({"status": "error", "message": str(e)}), 400
+        else:
+            logger.error(f"Invalid content type: {request.headers.get('content-type')}")
+            return jsonify({"status": "error", "message": "Invalid content type"}), 400
     
     def process_update_thread(app_instance, update):
         """Process update in a thread"""
         try:
+            logger.info(f"Processing update in thread: {update.update_id}")
+            
             # Create a new event loop for this thread
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -2202,47 +2260,62 @@ def run_flask_server():
             # Process the update
             loop.run_until_complete(app_instance.process_update(update))
             loop.close()
-        except Exception as e:
-            logger.error(f"Error processing update: {e}")
-    
-    # Set webhook on server startup
-    def setup_webhook():
-        """Setup Telegram webhook"""
-        try:
-            # Determine webhook URL
-            webhook_url = WEBHOOK_URL
-            if not webhook_url and RENDER_EXTERNAL_URL:
-                webhook_url = f"{RENDER_EXTERNAL_URL}/telegram"
             
-            if not webhook_url:
-                logger.warning("No webhook URL configured. Bot will run in polling mode.")
+            logger.info(f"Successfully processed update: {update.update_id}")
+        except Exception as e:
+            logger.error(f"Error processing update in thread: {e}", exc_info=True)
+    
+    # Enhanced webhook setup
+    def setup_webhook():
+        """Setup Telegram webhook with detailed verification"""
+        try:
+            # Use RENDER_EXTERNAL_URL since that's what you have
+            if not RENDER_EXTERNAL_URL:
+                logger.error("RENDER_EXTERNAL_URL not set!")
                 return False
             
-            # Delete any existing webhook first
-            delete_url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook"
-            response = requests.get(delete_url, timeout=10)
-            logger.info(f"Delete webhook response: {response.json()}")
+            webhook_url = f"{RENDER_EXTERNAL_URL}/telegram"
+            logger.info(f"Setting webhook to: {webhook_url}")
             
-            # Set new webhook
+            # First, delete any existing webhook
+            delete_url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook"
+            delete_response = requests.get(delete_url, timeout=10)
+            logger.info(f"Delete response: {delete_response.json()}")
+            
+            # Wait a moment
+            import time
+            time.sleep(1)
+            
+            # Set new webhook with ALL parameters
             set_url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
             payload = {
                 "url": webhook_url,
                 "drop_pending_updates": True,
-                "max_connections": 40
+                "max_connections": 100,
+                "allowed_updates": ["message", "callback_query", "edited_message"]
             }
-            response = requests.post(set_url, json=payload, timeout=10)
-            result = response.json()
+            
+            logger.info(f"Sending webhook setup with payload")
+            set_response = requests.post(set_url, json=payload, timeout=30)
+            result = set_response.json()
+            logger.info(f"Set webhook response: {result}")
+            
+            # Verify it was set
+            time.sleep(2)
+            verify_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo"
+            verify_response = requests.get(verify_url, timeout=10)
+            verify_result = verify_response.json()
+            logger.info(f"Verified webhook info: {verify_result}")
             
             if result.get("ok"):
-                logger.info(f"✅ Webhook set successfully: {webhook_url}")
-                logger.info(f"Webhook info: {result}")
+                logger.info(f"✅ Webhook successfully set to: {webhook_url}")
                 return True
             else:
                 logger.error(f"❌ Failed to set webhook: {result}")
                 return False
                 
         except Exception as e:
-            logger.error(f"Failed to set webhook: {e}")
+            logger.error(f"Webhook setup error: {str(e)}", exc_info=True)
             return False
     
     # Setup webhook when Flask starts
