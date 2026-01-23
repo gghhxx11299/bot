@@ -2135,7 +2135,7 @@ def create_application():
     return application
 
 # ======================
-# FLASK SERVER WITH FIXED WEBHOOK HANDLER
+# FLASK SERVER WITH WORKING WEBHOOK HANDLER
 # ======================
 def run_flask_server():
     """Run Flask server with webhook support"""
@@ -2198,7 +2198,7 @@ def run_flask_server():
         except Exception as e:
             return jsonify({"error": str(e)}), 500
     
-    # FIXED Webhook endpoint - Thread-safe processing
+    # SIMPLE WORKING Webhook endpoint
     @app.route('/telegram', methods=['POST'])
     def telegram_webhook():
         """Handle Telegram webhook updates"""
@@ -2206,21 +2206,21 @@ def run_flask_server():
             logger.info(f"=== WEBHOOK CALLED ===")
             
             # Get JSON data
-            json_data = request.get_json(force=True, silent=True)
+            json_string = request.get_data().decode('utf-8')
+            json_data = json.loads(json_string)
             
             if not json_data:
                 logger.error("No JSON data received")
                 return jsonify({"status": "error", "message": "No JSON data"}), 400
             
             update_id = json_data.get('update_id')
-            logger.info(f"Update ID: {update_id}")
             
-            # Check if it's a message
+            # Log message details
             if 'message' in json_data:
                 message = json_data['message']
                 user_id = message.get('from', {}).get('id')
                 text = message.get('text', '')
-                logger.info(f"Message from user {user_id}: {text}")
+                logger.info(f"📨 Message from user {user_id}: {text}")
             
             # Convert to Update object
             update = Update.de_json(json_data, application.bot)
@@ -2229,29 +2229,9 @@ def run_flask_server():
                 logger.error("Failed to parse update")
                 return jsonify({"status": "error", "message": "Invalid update"}), 400
             
-            # FIX: Process update in a thread-safe way
-            # Create a new event loop for this thread
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            async def process_update():
-                try:
-                    # Initialize application if not already initialized
-                    if not application.initialized:
-                        await application.initialize()
-                    
-                    # Process the update
-                    await application.process_update(update)
-                    logger.info(f"Successfully processed update {update_id}")
-                except Exception as e:
-                    logger.error(f"Error in process_update: {e}", exc_info=True)
-                finally:
-                    await application.shutdown()
-            
-            # Run the async function in the new loop
-            future = asyncio.ensure_future(process_update(), loop=loop)
-            loop.run_until_complete(future)
-            loop.close()
+            # FIXED: Use update_queue.put() - this is the thread-safe way
+            application.update_queue.put(update)
+            logger.info(f"📥 Update {update_id} added to queue")
             
             return jsonify({"status": "ok", "update_id": update_id})
             
@@ -2268,7 +2248,7 @@ def run_flask_server():
             "timestamp": datetime.now().isoformat()
         })
     
-    # FIXED webhook setup function
+    # Webhook setup function
     def setup_webhook():
         """Setup Telegram webhook"""
         try:
@@ -2287,7 +2267,6 @@ def run_flask_server():
             logger.info(f"Delete webhook response: {delete_response.json()}")
             
             # Wait a moment
-            import time
             time.sleep(1)
             
             # Set new webhook
@@ -2334,23 +2313,22 @@ def run_flask_server():
     run_background_tasks()
     
     logger.info(f"🚀 Starting Flask server on port {PORT}")
-    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
-
-def main():
-    """Main entry point"""
-    logger.info("=" * 60)
-    logger.info("🚀 YAZILIGN BOT STARTING")
-    logger.info(f"🤖 Token: {'*' * 20}{BOT_TOKEN[-4:] if BOT_TOKEN else 'NONE'}")
-    logger.info(f"👑 Admin: {ADMIN_CHAT_ID}")
-    logger.info(f"📊 Sheet: {SHEET_ID[:10]}..." if SHEET_ID else "📊 Sheet: NONE")
-    logger.info(f"🌐 Port: {PORT}")
-    logger.info(f"⚡ Batch Size: {BATCH_MAX_SIZE}")
-    logger.info(f"💾 Cache Timeout: {CACHE_TIMEOUT}s")
-    logger.info(f"🌐 Webhook URL: {RENDER_EXTERNAL_URL or WEBHOOK_URL or 'Not set'}")
-    logger.info("=" * 60)
     
-    # Run Flask server
-    run_flask_server()
-
-if __name__ == "__main__":
-    main()
+    # Start the application updater in a separate thread
+    def start_updater():
+        time.sleep(2)  # Wait for Flask to start
+        logger.info("🚀 Starting bot updater to process queued updates...")
+        try:
+            # This will process updates from update_queue
+            application.run_polling(
+                drop_pending_updates=False,  # Don't drop, we're using webhook
+                allowed_updates=["message", "callback_query", "edited_message"]
+            )
+        except Exception as e:
+            logger.error(f"Updater error: {e}")
+    
+    updater_thread = Thread(target=start_updater, daemon=True)
+    updater_thread.start()
+    
+    # Start Flask server
+    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
