@@ -1,7 +1,7 @@
 import os
 import logging
 from datetime import datetime, timedelta
-from threading import Timer, Thread, Lock, Event
+from threading import Lock
 from uuid import uuid4
 import re
 from math import radians, sin, cos, sqrt, atan2
@@ -22,15 +22,10 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from telegram.error import TelegramError
 from flask import Flask, jsonify, request
 import asyncio
-import signal
 import sys
-import time
 import json
-import atexit
-import threading
 from concurrent.futures import ThreadPoolExecutor
 
 # ======================
@@ -49,7 +44,7 @@ SHEET_ID = os.getenv("SHEET_ID", "").strip()
 
 # Google Sheets credentials from environment
 GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON", "{}")
-if GOOGLE_CREDS_JSON:
+if GOOGLE_CREDS_JSON and GOOGLE_CREDS_JSON != "{}":
     GOOGLE_CREDS = json.loads(GOOGLE_CREDS_JSON)
 else:
     # Fallback to individual env vars
@@ -82,6 +77,7 @@ MAX_ALLOWED_DISTANCE = 500
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 PORT = int(os.getenv("PORT", "10000"))
 USE_WEBHOOK = bool(WEBHOOK_URL)
+ADMIN_TELEGRAM_USERNAME = "@YazilignAdmin"  # Replace with actual admin username
 
 # Configure logging
 logging.basicConfig(
@@ -89,7 +85,7 @@ logging.basicConfig(
     level=logging.INFO,
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("bot.log")
+        logging.FileHandler("yazilign_bot.log")
     ]
 )
 logger = logging.getLogger(__name__)
@@ -169,9 +165,9 @@ def get_msg(key, **kwargs):
         "final_hours": "How many hours did the worker wait? (Min 1, Max 12)\nሰራተኛው ምን ያህል ሰዓት ቆየ? (ቢያንስ 1፣ ከፍተኛ 12)",
         "final_payment": "💼 Pay {amount} ETB to worker and upload receipt.\n💼 ለሰራተኛ {amount} ብር ይላክሱ እና ሲምበር ያስገቡ።",
         "payment_complete": "✅ Payment confirmed! Thank you.\n✅ ክፍያ ተረጋግጧል! እናመሰግናለን።",
-        "commission_request": "💰 You earned {total} ETB! Send 25% ({commission}) to @YourTelegram within 3 hours.\n💰 {total} ብር ሰርተዋል! የ25% ኮሚሽን ({commission}) በ3 ሰዓት ውስጥ ለ @YourTelegram ይላኩ።",
-        "commission_timeout": "⏰ 1 hour left to send your 25% commission!\n⏰ የ25% ኮሚሽን ለመላክ 1 ሰዓት ብቻ ይቀራል!",
-        "commission_missed": "🚨 You missed the commission deadline. Contact admin immediately.\n🚨 የኮሚሽን መክፈያ ጊዜ አልፏል። በአስቸኳይ አስተዳዳሪውን ያነጋግሩ።",
+        "commission_request": f"💰 You earned {{total}} ETB! Send 25% ({{commission}}) to {ADMIN_TELEGRAM_USERNAME} within 3 hours.\n💰 {{total}} ብር ሰርተዋል! የ25% ኮሚሽን ({{commission}}) በ3 ሰዓት ውስጥ ለ {ADMIN_TELEGRAM_USERNAME} ይላኩ።",
+        "commission_timeout": f"⏰ 1 hour left to send your 25% commission to {ADMIN_TELEGRAM_USERNAME}!\n⏰ የ25% ኮሚሽን ለ{ADMIN_TELEGRAM_USERNAME} ለመላክ 1 ሰዓት ብቻ ይቀራል!",
+        "commission_missed": f"🚨 You missed the commission deadline. Contact {ADMIN_TELEGRAM_USERNAME} immediately.\n🚨 የኮሚሽን መክፈያ ጊዜ አልፏል። በአስቸኳይ {ADMIN_TELEGRAM_USERNAME} ያነጋግሩ።",
         "request_new_worker": "🔄 Request New Worker\n🔄 ሌላ ሰራተኛ ይፈለግ",
         "reassign_reason": "Why do you want a new worker?\nሌላ ሰራተኛ ለምን ፈለጉ?",
         "worker_reassigned": "🔁 Job reopened. A new worker will be assigned soon.\n🔁 ስራው በድጋሚ ክፍት ሆኗል። በቅርቡ ሌላ ሰራተኛ ይመደባል።",
@@ -183,7 +179,7 @@ def get_msg(key, **kwargs):
         "dispute_submitted": "📄 Dispute submitted. Admin will review shortly.\n📄 ቅሬታዎ ቀርቧል። አስተዳዳሪው በቅርቡ ይመለከተዋል።",
         "rate_worker": "How would you rate this worker? (1-5 stars)\nለዚህ ሰራተኛ ምን ያህል ኮከብ ይሰጣሉ? (ከ1-5 ኮከቦች)",
         "rating_thanks": "Thank you! Your feedback helps us improve.\nእናመሰግናለን! የእርስዎ አስተያየት አገልግሎታችንን ለማሻሻል ይረዳናል።",
-        "user_banned": "🚫 You are banned from using Yazilign. Contact admin for details.\n🚫 ከያዝልኝ አገልግሎት ታግደዋል። ለዝርዝር መረጃ አስተዳዳሪውን ያነጋግሩ።",
+        "user_banned": f"🚫 You are banned from using Yazilign. Contact {ADMIN_TELEGRAM_USERNAME} for details.\n🚫 ከያዝልኝ አገልግሎት ታግደዋል። ለዝርዝር መረጃ {ADMIN_TELEGRAM_USERNAME} ያነጋግሩ።",
         "worker_far_warning": "⚠️ Worker moved >100m from job site!\n⚠️ ሠራተኛው ከሥራ ቦታ በላይ 100ሜ ተንቀሳቅሷል!",
         "worker_far_ban": "🚨 Worker moved >500m! Order cancelled & banned.\n🚨 ሠራተኛው ከሥራ ቦታ በላይ 500ሜ ተንቀሳቅሷል! ትዕዛዝ ተሰርዟል እና ታግዷል።",
         "menu_client_worker": "Client\nደንበኛ\n\nWorker\nሰራተኛ",
@@ -192,7 +188,7 @@ def get_msg(key, **kwargs):
         "menu_update_options": "📱 Phone\n📱 ስልክ\n\n💳 Telebirr\n💳 ቴሌቢር\n\n🏦 Bank\n🏦 ባንክ\n\n🔢 Account\n🔢 አካውንት\n\n📸 Fyda Photos\n📸 የፍይዳ ፎቶዎች\n\n↩️ Back to Main Menu\n↩️ ወደ ዋና ገጽ",
         "menu_confirm_arrival": "✅ Confirm Arrival\n✅ መጣ ተብሎ ያረጋግጡ\n\n↩️ Back to Main Menu\n↩️ ወደ ዋና ገጽ",
         "menu_front_of_line": "✅ I'm at the front of the line\n✅ የመስረቃ መስመር ላይ ነኝ\n\n↩️ Back to Main Menu\n↩️ ወደ ዋና ገጽ",
-        "admin_contact": "@YazilignAdmin"
+        "admin_contact": ADMIN_TELEGRAM_USERNAME
     }
     
     msg = messages.get(key, key)
@@ -1950,6 +1946,26 @@ async def setup_webhook(application: Application):
     else:
         logger.warning("WEBHOOK_URL not set, using polling instead")
 
+async def cleanup_existing_webhook():
+    """Clean up any existing webhook before starting"""
+    try:
+        from telegram import Bot
+        bot = Bot(token=BOT_TOKEN)
+        
+        # Get current webhook info
+        webhook_info = await bot.get_webhook_info()
+        logger.info(f"Current webhook: {webhook_info.url}")
+        
+        if webhook_info.url:
+            logger.info("Deleting existing webhook...")
+            await bot.delete_webhook()
+            logger.info("✅ Webhook deleted successfully")
+        
+        return True
+    except Exception as e:
+        logger.error(f"Error cleaning up webhook: {e}")
+        return False
+
 def run_bot_with_polling():
     """Run bot with polling (for development)"""
     application = setup_bot_application()
@@ -2004,12 +2020,14 @@ def main():
     logger.info(f"Port: {PORT}")
     logger.info("=" * 50)
     
-    if USE_WEBHOOK:
-        logger.info("Using webhook mode")
-        run_bot_with_webhook()
-    else:
-        logger.info("Using polling mode")
-        run_bot_with_polling()
+    # Clean up any existing webhook first
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(cleanup_existing_webhook())
+    
+    # Force polling for now to debug
+    logger.info("Using polling mode for now...")
+    run_bot_with_polling()
 
 if __name__ == "__main__":
     main()
