@@ -1,7 +1,7 @@
 import os
 import logging
 from datetime import datetime, timedelta
-from threading import Lock
+from threading import Lock, Thread
 from uuid import uuid4
 import re
 from math import radians, sin, cos, sqrt, atan2
@@ -27,6 +27,7 @@ import asyncio
 import sys
 import json
 from concurrent.futures import ThreadPoolExecutor
+import time
 
 # ======================
 # GLOBAL STATE WITH LOCK
@@ -187,7 +188,7 @@ def get_msg(key, **kwargs):
         "menu_worker_dashboard": "✅ Accept Jobs\n✅ ስራ ተቀበል\n\n✏️ Update Profile\n✏️ መግለጫ አዘምን\n\n📊 View Earnings\n📊 ገቢ ይመልከቱ\n\n↩️ Back to Main Menu\n↩️ ወደ ዋና ገጽ",
         "menu_update_options": "📱 Phone\n📱 ስልክ\n\n💳 Telebirr\n💳 ቴሌቢር\n\n🏦 Bank\n🏦 ባንክ\n\n🔢 Account\n🔢 አካውንት\n\n📸 Fyda Photos\n📸 የፍይዳ ፎቶዎች\n\n↩️ Back to Main Menu\n↩️ ወደ ዋና ገጽ",
         "menu_confirm_arrival": "✅ Confirm Arrival\n✅ መጣ ተብሎ ያረጋግጡ\n\n↩️ Back to Main Menu\n↩️ ወደ ዋና ገጽ",
-        "menu_front_of_line": "✅ I'm at the front of the line\n✅ የመስረቃ መስመር ላይ ነኝ\n\n↩️ Back to Main Menu\n↩️ ወደ ዋና ገጽ"
+        "menu_front_of_line": "✅ I'm at the front of the line\n✅ የመስረቃ መስመር ላይ ነኝ"
     }
     
     msg = messages.get(key, key)
@@ -1726,59 +1727,44 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Exception while handling an update:", exc_info=context.error)
 
 # ======================
-# FLASK APP WITH WEBHOOK
+# SIMPLE HTTP SERVER FOR RENDER
 # ======================
-flask_app = Flask(__name__)
-
-@flask_app.route("/")
-def home():
-    return jsonify({
-        "status": "Yazilign Bot is running", 
-        "timestamp": datetime.now().isoformat(),
-        "version": "2.0",
-        "mode": "webhook" if USE_WEBHOOK else "polling"
-    })
-
-@flask_app.route("/health")
-def health():
-    return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
-
-@flask_app.route("/ping")
-def ping():
-    logger.info("Ping endpoint called")
-    return jsonify({"status": "pong", "time": str(datetime.now())})
-
-@flask_app.route("/status")
-def status():
-    return jsonify({
-        "bot_token_exists": bool(BOT_TOKEN),
-        "admin_id": ADMIN_CHAT_ID,
-        "sheet_id": bool(SHEET_ID),
-        "webhook_url": WEBHOOK_URL,
-        "user_state_count": len(USER_STATE),
-        "active_cities": ACTIVE_CITIES
-    })
-
-@flask_app.route("/webhook", methods=["POST"])
-def webhook():
-    """Webhook endpoint for Telegram"""
-    if request.method == "POST":
-        try:
-            update = Update.de_json(request.get_json(force=True), bot_app.bot)
-            
-            # Process update in thread pool to avoid blocking
-            future = EXECUTOR.submit(
-                asyncio.run_coroutine_threadsafe,
-                bot_app.process_update(update),
-                bot_app._loop
-            )
-            future.result(timeout=10)
-            
-            return jsonify({"status": "ok"})
-        except Exception as e:
-            logger.error(f"Webhook error: {e}")
-            return jsonify({"status": "error", "message": str(e)}), 500
-    return jsonify({"status": "ok"})
+def run_http_server():
+    """Run a simple HTTP server to keep Render happy"""
+    from flask import Flask, jsonify
+    
+    http_app = Flask(__name__)
+    
+    @http_app.route('/')
+    def home():
+        return jsonify({
+            "status": "Yazilign Bot is running",
+            "timestamp": datetime.now().isoformat(),
+            "bot_mode": "polling",
+            "health": "ok"
+        })
+    
+    @http_app.route('/health')
+    def health():
+        return jsonify({"status": "ok", "bot": "running"})
+    
+    @http_app.route('/status')
+    def status():
+        return jsonify({
+            "bot_token_exists": bool(BOT_TOKEN),
+            "admin_id": ADMIN_CHAT_ID,
+            "sheet_id": bool(SHEET_ID),
+            "user_state_count": len(USER_STATE),
+            "active_cities": ACTIVE_CITIES,
+            "port": PORT
+        })
+    
+    @http_app.route('/ping')
+    def ping():
+        return jsonify({"status": "pong", "time": str(datetime.now())})
+    
+    logger.info(f"🚀 Starting HTTP server on port {PORT}")
+    http_app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
 # ======================
 # MAIN APPLICATION SETUP
@@ -1819,63 +1805,14 @@ def setup_bot_application():
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_error_handler(error_handler)
     
-    logger.info("Bot application set up successfully")
+    logger.info("✅ Bot application set up successfully")
     return application
 
-async def setup_webhook(application: Application):
-    """Set up webhook for the bot"""
-    if WEBHOOK_URL:
-        webhook_url = f"{WEBHOOK_URL.rstrip('/')}/webhook"
-        logger.info(f"Setting webhook to: {webhook_url}")
-        
-        try:
-            # First, delete any existing webhook
-            await application.bot.delete_webhook()
-            logger.info("Deleted existing webhook")
-            
-            # Set new webhook
-            await application.bot.set_webhook(
-                url=webhook_url,
-                drop_pending_updates=True,
-                allowed_updates=Update.ALL_TYPES
-            )
-            logger.info("Webhook set successfully")
-            
-            # Verify webhook
-            webhook_info = await application.bot.get_webhook_info()
-            logger.info(f"Webhook info: {webhook_info.url}")
-            logger.info(f"Webhook pending updates: {webhook_info.pending_update_count}")
-        except Exception as e:
-            logger.error(f"Failed to set webhook: {e}")
-            raise
-    else:
-        logger.warning("WEBHOOK_URL not set, using polling instead")
-
-async def cleanup_existing_webhook():
-    """Clean up any existing webhook before starting"""
-    try:
-        from telegram import Bot
-        bot = Bot(token=BOT_TOKEN)
-        
-        # Get current webhook info
-        webhook_info = await bot.get_webhook_info()
-        logger.info(f"Current webhook: {webhook_info.url}")
-        
-        if webhook_info.url:
-            logger.info("Deleting existing webhook...")
-            await bot.delete_webhook()
-            logger.info("✅ Webhook deleted successfully")
-        
-        return True
-    except Exception as e:
-        logger.error(f"Error cleaning up webhook: {e}")
-        return False
-
 def run_bot_with_polling():
-    """Run bot with polling (for development)"""
+    """Run bot with polling"""
     application = setup_bot_application()
     
-    logger.info("Starting bot with polling...")
+    logger.info("🚀 Starting bot with polling...")
     
     # Run bot with polling
     application.run_polling(
@@ -1887,51 +1824,29 @@ def run_bot_with_polling():
         timeout=20
     )
 
-def run_bot_with_webhook():
-    """Run bot with webhook (for production)"""
-    global bot_app
-    
-    bot_app = setup_bot_application()
-    
-    # Get event loop
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    # Set up webhook
-    loop.run_until_complete(setup_webhook(bot_app))
-    
-    # Initialize the bot (without polling)
-    bot_app.initialize()
-    
-    logger.info(f"Starting Flask server on port {PORT}")
-    
-    # Run Flask
-    flask_app.run(
-        host="0.0.0.0",
-        port=PORT,
-        debug=False,
-        use_reloader=False,
-        threaded=True
-    )
-
+# ======================
+# MAIN FUNCTION
+# ======================
 def main():
     """Main entry point"""
     logger.info("=" * 50)
-    logger.info("Starting Yazilign Bot...")
-    logger.info(f"Bot Token: {'*' * 20}{BOT_TOKEN[-4:] if BOT_TOKEN else 'NONE'}")
-    logger.info(f"Admin ID: {ADMIN_CHAT_ID}")
-    logger.info(f"Sheet ID: {SHEET_ID[:10]}...")
-    logger.info(f"Webhook URL: {WEBHOOK_URL}")
-    logger.info(f"Port: {PORT}")
+    logger.info("🚀 Starting Yazilign Bot...")
+    logger.info(f"🤖 Bot Token: {'*' * 20}{BOT_TOKEN[-4:] if BOT_TOKEN else 'NONE'}")
+    logger.info(f"👑 Admin ID: {ADMIN_CHAT_ID}")
+    logger.info(f"📊 Sheet ID: {SHEET_ID[:10]}..." if SHEET_ID else "📊 Sheet ID: NONE")
+    logger.info(f"🌐 Port: {PORT}")
+    logger.info(f"🔗 Webhook Mode: {'YES' if USE_WEBHOOK and WEBHOOK_URL else 'NO'}")
     logger.info("=" * 50)
     
-    # Clean up any existing webhook first
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(cleanup_existing_webhook())
+    # Start HTTP server in a separate thread
+    http_thread = Thread(target=run_http_server, daemon=True)
+    http_thread.start()
     
-    # Force polling for now to debug
-    logger.info("Using polling mode for now...")
+    # Give HTTP server a moment to start
+    logger.info("⏳ Waiting for HTTP server to start...")
+    time.sleep(3)
+    
+    # Start the bot with polling
     run_bot_with_polling()
 
 if __name__ == "__main__":
