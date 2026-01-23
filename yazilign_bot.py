@@ -22,7 +22,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import asyncio
 import sys
 import json
@@ -823,7 +823,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             orders = get_pending_orders()
             if orders:
                 await update.message.reply_text(
-                    f"🔍 Found {len(orders)} available jobs!\n🔍 {len(orders)} የሚገኙ ስራዎች ተገኝተዋል!\n\nYou will receive notifications when new jobs are posted.\nአዲስ ስራዎች ሲለጡ ማሳወቂያ ይደርስዎታል።"
+                    f"🔍 Found {len(orders)} available jobs!\n🔍 {len(orders)} የሚገኙ ስራዎች ተገኝተዋል!\n\nYou will receive notifications when new jobs are posted.\nአዲስ ስራዎች ሲለጡ ማስታወቂያ ይደርስዎታል።"
                 )
             else:
                 await update.message.reply_text(
@@ -1853,50 +1853,7 @@ async def check_commission_deadlines(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Commission check error: {e}")
 
 # ======================
-# HTTP SERVER
-# ======================
-def run_http_server():
-    from flask import Flask, jsonify
-    
-    http_app = Flask(__name__)
-    
-    @http_app.route('/')
-    def home():
-        return jsonify({
-            "status": "Yazilign Bot Running",
-            "timestamp": datetime.now().isoformat(),
-            "users_in_memory": len(USER_STATE),
-            "batch_queue": {k: len(v) for k, v in BATCH_OPERATIONS.items()},
-            "cache_status": {k: "valid" if v["data"] else "invalid" for k, v in SHEETS_CACHE.items()}
-        })
-    
-    @http_app.route('/health')
-    def health():
-        return jsonify({
-            "status": "healthy",
-            "bot_token": bool(BOT_TOKEN),
-            "sheet_id": bool(SHEET_ID),
-            "batch_operations": sum(len(ops) for ops in BATCH_OPERATIONS.values())
-        })
-    
-    @http_app.route('/flush')
-    def flush():
-        try:
-            flush_all_batches()
-            return jsonify({"status": "flushed", "operations": "all"})
-        except Exception as e:
-            return jsonify({"status": "error", "message": str(e)}), 500
-    
-    @http_app.route('/cache/clear')
-    def clear_cache():
-        invalidate_cache()
-        return jsonify({"status": "cache_cleared"})
-    
-    logger.info(f"🚀 Starting HTTP server on port {PORT}")
-    http_app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
-
-# ======================
-# MAIN APPLICATION
+# SETUP APPLICATION
 # ======================
 def setup_bot_application():
     if not BOT_TOKEN or not SHEET_ID:
@@ -1932,18 +1889,78 @@ def setup_bot_application():
     logger.info("✅ Bot application setup complete")
     return application
 
-def run_bot_with_polling():
-    application = setup_bot_application()
+# ======================
+# HTTP SERVER WITH WEBHOOK
+# ======================
+def run_http_server_with_webhook():
+    http_app = Flask(__name__)
     
-    logger.info("🚀 Starting bot with polling...")
+    @http_app.route('/')
+    def home():
+        return jsonify({
+            "status": "Yazilign Bot Running",
+            "timestamp": datetime.now().isoformat(),
+            "users_in_memory": len(USER_STATE),
+            "batch_queue": {k: len(v) for k, v in BATCH_OPERATIONS.items()},
+            "cache_status": {k: "valid" if v["data"] else "invalid" for k, v in SHEETS_CACHE.items()}
+        })
     
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True,
-        close_loop=False,
-        poll_interval=0.5,
-        timeout=20
-    )
+    @http_app.route('/health')
+    def health():
+        return jsonify({
+            "status": "healthy",
+            "bot_token": bool(BOT_TOKEN),
+            "sheet_id": bool(SHEET_ID),
+            "batch_operations": sum(len(ops) for ops in BATCH_OPERATIONS.values())
+        })
+    
+    @http_app.route('/flush')
+    def flush():
+        try:
+            flush_all_batches()
+            return jsonify({"status": "flushed", "operations": "all"})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+    
+    @http_app.route('/cache/clear')
+    def clear_cache():
+        invalidate_cache()
+        return jsonify({"status": "cache_cleared"})
+    
+    # Webhook endpoint for Telegram
+    @http_app.route('/telegram', methods=['POST'])
+    def telegram_webhook():
+        """Handle Telegram webhook updates"""
+        try:
+            # Create a new application instance for each request
+            application = setup_bot_application()
+            
+            # Process the update
+            update = Update.de_json(request.get_json(force=True), application.bot)
+            
+            # Use ThreadPoolExecutor to run the async function
+            async def process():
+                await application.process_update(update)
+            
+            # Run in current event loop or create new one
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            if loop.is_running():
+                asyncio.create_task(process())
+            else:
+                loop.run_until_complete(process())
+            
+            return jsonify({"status": "ok"})
+        except Exception as e:
+            logger.error(f"Webhook error: {e}")
+            return jsonify({"status": "error", "message": str(e)}), 500
+    
+    logger.info(f"🚀 Starting HTTP server with webhook on port {PORT}")
+    http_app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
 def main():
     logger.info("=" * 60)
@@ -1956,14 +1973,8 @@ def main():
     logger.info(f"💾 Cache Timeout: {CACHE_TIMEOUT}s")
     logger.info("=" * 60)
     
-    http_thread = Thread(target=run_http_server, daemon=True)
-    http_thread.start()
-    
-    time.sleep(2)
-    
-    run_bot_with_polling()
-
+    # Run the HTTP server with webhook support
+    run_http_server_with_webhook()
 
 if __name__ == "__main__":
     main()
-
