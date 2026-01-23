@@ -65,6 +65,8 @@ BATCH_MAX_SIZE = 50
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN_MAIN", "").strip()
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
 SHEET_ID = os.getenv("SHEET_ID", "").strip()
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").strip()
 
 # Google Sheets credentials
 GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON", "{}")
@@ -1853,9 +1855,10 @@ async def check_commission_deadlines(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Commission check error: {e}")
 
 # ======================
-# SETUP APPLICATION
+# MAIN APPLICATION
 # ======================
-def setup_bot_application():
+def create_application():
+    """Create and configure the Telegram bot application"""
     if not BOT_TOKEN or not SHEET_ID:
         logger.error("Missing required environment variables")
         sys.exit(1)
@@ -1870,6 +1873,7 @@ def setup_bot_application():
         .build()
     )
     
+    # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("stats", admin_stats))
     application.add_handler(CommandHandler("flush", admin_flush))
@@ -1880,22 +1884,27 @@ def setup_bot_application():
     application.add_handler(MessageHandler(filters.LOCATION, handle_location))
     application.add_handler(CallbackQueryHandler(handle_callback))
     
+    # Add job queue for background tasks
     job_queue = application.job_queue
     if job_queue:
         job_queue.run_repeating(auto_flush_batches, interval=BATCH_FLUSH_INTERVAL, first=5)
         job_queue.run_repeating(monitor_ghost_orders, interval=3600, first=10)
         job_queue.run_repeating(check_commission_deadlines, interval=1800, first=15)
     
-    logger.info("✅ Bot application setup complete")
+    logger.info("✅ Bot application created successfully")
     return application
 
 # ======================
-# HTTP SERVER WITH WEBHOOK
+# FLASK SERVER
 # ======================
-def run_http_server_with_webhook():
-    http_app = Flask(__name__)
+def run_flask_server():
+    """Run Flask server with webhook support"""
+    app = Flask(__name__)
     
-    @http_app.route('/')
+    # Create application instance
+    application = create_application()
+    
+    @app.route('/')
     def home():
         return jsonify({
             "status": "Yazilign Bot Running",
@@ -1905,7 +1914,7 @@ def run_http_server_with_webhook():
             "cache_status": {k: "valid" if v["data"] else "invalid" for k, v in SHEETS_CACHE.items()}
         })
     
-    @http_app.route('/health')
+    @app.route('/health')
     def health():
         return jsonify({
             "status": "healthy",
@@ -1914,7 +1923,7 @@ def run_http_server_with_webhook():
             "batch_operations": sum(len(ops) for ops in BATCH_OPERATIONS.values())
         })
     
-    @http_app.route('/flush')
+    @app.route('/flush')
     def flush():
         try:
             flush_all_batches()
@@ -1922,47 +1931,70 @@ def run_http_server_with_webhook():
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 500
     
-    @http_app.route('/cache/clear')
+    @app.route('/cache/clear')
     def clear_cache():
         invalidate_cache()
         return jsonify({"status": "cache_cleared"})
     
-    # Webhook endpoint for Telegram
-    @http_app.route('/telegram', methods=['POST'])
+    # Webhook endpoint
+    @app.route('/telegram', methods=['POST'])
     def telegram_webhook():
         """Handle Telegram webhook updates"""
-        try:
-            # Create a new application instance for each request
-            application = setup_bot_application()
+        if request.headers.get('content-type') == 'application/json':
+            json_string = request.get_data().decode('utf-8')
+            update = Update.de_json(json_string, application.bot)
             
-            # Process the update
-            update = Update.de_json(request.get_json(force=True), application.bot)
-            
-            # Use ThreadPoolExecutor to run the async function
-            async def process():
-                await application.process_update(update)
-            
-            # Run in current event loop or create new one
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            
-            if loop.is_running():
-                asyncio.create_task(process())
-            else:
-                loop.run_until_complete(process())
+            # Process update in a separate thread to avoid blocking
+            Thread(target=process_update_thread, args=(application, update)).start()
             
             return jsonify({"status": "ok"})
-        except Exception as e:
-            logger.error(f"Webhook error: {e}")
-            return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({"status": "error", "message": "Invalid content type"}), 400
     
-    logger.info(f"🚀 Starting HTTP server with webhook on port {PORT}")
-    http_app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
+    def process_update_thread(app_instance, update):
+        """Process update in a thread"""
+        try:
+            # Create a new event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            # Process the update
+            loop.run_until_complete(app_instance.process_update(update))
+            loop.close()
+        except Exception as e:
+            logger.error(f"Error processing update: {e}")
+    
+    # Set webhook on startup
+    @app.before_first_request
+    def set_webhook():
+        """Set Telegram webhook when server starts"""
+        try:
+            # Determine webhook URL
+            webhook_url = WEBHOOK_URL
+            if not webhook_url and RENDER_EXTERNAL_URL:
+                webhook_url = f"{RENDER_EXTERNAL_URL}/telegram"
+            
+            if webhook_url:
+                # Delete any existing webhook first
+                import requests
+                delete_url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook"
+                requests.get(delete_url)
+                
+                # Set new webhook
+                set_url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
+                payload = {
+                    "url": webhook_url,
+                    "drop_pending_updates": True
+                }
+                response = requests.post(set_url, json=payload)
+                logger.info(f"Webhook set: {response.json()}")
+        except Exception as e:
+            logger.error(f"Failed to set webhook: {e}")
+    
+    logger.info(f"🚀 Starting Flask server on port {PORT}")
+    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
 def main():
+    """Main entry point"""
     logger.info("=" * 60)
     logger.info("🚀 YAZILIGN BOT STARTING")
     logger.info(f"🤖 Token: {'*' * 20}{BOT_TOKEN[-4:] if BOT_TOKEN else 'NONE'}")
@@ -1971,10 +2003,11 @@ def main():
     logger.info(f"🌐 Port: {PORT}")
     logger.info(f"⚡ Batch Size: {BATCH_MAX_SIZE}")
     logger.info(f"💾 Cache Timeout: {CACHE_TIMEOUT}s")
+    logger.info(f"🌐 Webhook URL: {WEBHOOK_URL or RENDER_EXTERNAL_URL or 'Not set'}")
     logger.info("=" * 60)
     
-    # Run the HTTP server with webhook support
-    run_http_server_with_webhook()
+    # Run Flask server
+    run_flask_server()
 
 if __name__ == "__main__":
     main()
