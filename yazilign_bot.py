@@ -372,86 +372,246 @@ def bulk_get_sheets_data(sheet_names):
     return results
 
 # ======================
-# DATA FUNCTIONS
+# DATA FUNCTIONS (UPDATED FOR YOUR STRUCTURE)
 # ======================
+def get_all_worksheet_names():
+    """Get all worksheet names in the spreadsheet"""
+    try:
+        client = get_sheet_client()
+        spreadsheet = client.open_by_key(SHEET_ID)
+        worksheets = spreadsheet.worksheets()
+        return [ws.title for ws in worksheets]
+    except Exception as e:
+        logger.error(f"Error getting worksheet names: {e}")
+        return []
+
 def get_user_by_id(user_id):
-    users = get_worksheet_data_optimized("Users")
-    for user in users:
-        if str(user.get("User_ID")) == str(user_id):
-            return user
-    return None
+    """Get user from your Users sheet - Updated for your structure"""
+    try:
+        users_data = get_worksheet_data_optimized("Users")
+        if not users_data:
+            return None
+        
+        # Check different possible column names for User_ID
+        for user in users_data:
+            # Try User_ID column first
+            if str(user.get("User_ID")) == str(user_id):
+                return user
+            # Try ID column
+            if str(user.get("ID")) == str(user_id):
+                return user
+            # Try Telegram_ID column  
+            if str(user.get("Telegram_ID")) == str(user_id):
+                return user
+        
+        return None
+    except Exception as e:
+        logger.error(f"Error getting user {user_id}: {e}")
+        return None
 
 def get_worker_by_telegram_id(telegram_id):
-    workers = get_worksheet_data_optimized("Workers")
-    for worker in workers:
-        if str(worker.get("Telegram_ID")) == str(telegram_id):
-            return worker
-    return None
+    """Get worker from Workers or Users sheet"""
+    try:
+        # First try Workers sheet
+        try:
+            workers_data = get_worksheet_data_optimized("Workers")
+            if workers_data:
+                for worker in workers_data:
+                    if str(worker.get("Telegram_ID")) == str(telegram_id):
+                        return worker
+        except:
+            pass
+        
+        # If no Workers sheet, try Users sheet with Role=Worker
+        users_data = get_worksheet_data_optimized("Users")
+        if users_data:
+            for user in users_data:
+                if str(user.get("Telegram_ID")) == str(telegram_id):
+                    # Check if they have worker role
+                    role = user.get("Role", "")
+                    if role.lower() == "worker" or "worker" in role.lower():
+                        return user
+        
+        return None
+    except Exception as e:
+        logger.error(f"Error getting worker {telegram_id}: {e}")
+        return None
 
 def get_active_workers():
-    workers = get_worksheet_data_optimized("Workers")
-    return [w for w in workers if w.get("Status") == "Active"]
+    """Get active workers from Workers or Users sheet"""
+    try:
+        # Try Workers sheet first
+        try:
+            workers_data = get_worksheet_data_optimized("Workers")
+            if workers_data:
+                return [w for w in workers_data if w.get("Status") == "Active"]
+        except:
+            pass
+        
+        # Fallback to Users sheet
+        users_data = get_worksheet_data_optimized("Users")
+        if users_data:
+            active_workers = []
+            for user in users_data:
+                role = user.get("Role", "").lower()
+                status = user.get("Status", "").lower()
+                telegram_id = user.get("Telegram_ID", "")
+                
+                if ("worker" in role) and status == "active" and telegram_id:
+                    active_workers.append(user)
+            return active_workers
+        
+        return []
+    except Exception as e:
+        logger.error(f"Error getting active workers: {e}")
+        return []
 
 def get_order_by_id(order_id):
-    orders = get_worksheet_data_optimized("Orders")
-    for order in orders:
-        if order.get("Order_ID") == order_id:
-            return order
-    return None
+    """Get order from Orders sheet"""
+    try:
+        orders_data = get_worksheet_data_optimized("Orders")
+        for order in orders_data:
+            if order.get("Order_ID") == order_id:
+                return order
+        return None
+    except:
+        # If Orders sheet doesn't exist, try to create it
+        try:
+            client = get_sheet_client()
+            spreadsheet = client.open_by_key(SHEET_ID)
+            spreadsheet.add_worksheet(title="Orders", rows=100, cols=20)
+            # Add headers
+            worksheet = spreadsheet.worksheet("Orders")
+            headers = ["Order_ID", "Timestamp", "Username", "Bureau_Name", "Status", 
+                      "Assigned_Worker", "Hourly_Rate", "Booking_Fee_Paid", 
+                      "Payment_Status", "Payment_Method", "Assignment_Timestamp",
+                      "Client_TG_ID", "Location", "City", "Total_Hours", "Total_Amount"]
+            worksheet.append_row(headers)
+            return None
+        except Exception as e:
+            logger.error(f"Failed to create Orders sheet: {e}")
+            return None
 
 def get_pending_orders():
-    orders = get_worksheet_data_optimized("Orders")
-    return [o for o in orders if o.get("Status") == "Pending"]
+    """Get pending orders"""
+    try:
+        orders_data = get_worksheet_data_optimized("Orders")
+        if orders_data:
+            return [o for o in orders_data if o.get("Status") == "Pending"]
+        return []
+    except:
+        logger.warning("Orders sheet not found or empty")
+        return []
 
 def update_order_in_batch(order_id, updates):
+    """Update order in Orders sheet"""
     try:
-        orders = get_worksheet_data_optimized("Orders", use_cache=False)
+        orders_data = get_worksheet_data_optimized("Orders", use_cache=False)
         
-        for i, order in enumerate(orders):
+        for i, order in enumerate(orders_data):
             if order.get("Order_ID") == order_id:
-                row_index = i + 2
+                row_index = i + 2  # +2 because spreadsheet rows start at 1 and headers are row 1
                 worksheet = get_worksheet("Orders")
                 headers = worksheet.row_values(1)
                 
                 for field, value in updates.items():
-                    if field in headers:
-                        col_index = headers.index(field) + 1
+                    # Try to find the column
+                    col_index = None
+                    for j, header in enumerate(headers):
+                        if header.replace(" ", "_").replace("-", "_") == field.replace(" ", "_").replace("-", "_"):
+                            col_index = j + 1
+                            break
+                    
+                    if col_index:
                         add_to_batch("Orders", "update", (row_index, col_index, str(value)))
+                    else:
+                        logger.warning(f"Column {field} not found in Orders sheet")
                 
+                # Also update the cache
                 for field, value in updates.items():
                     if field in order:
                         order[field] = str(value)
                 
                 return True
         
+        logger.warning(f"Order {order_id} not found for update")
         return False
     except Exception as e:
-        logger.error(f"Error updating order: {e}")
+        logger.error(f"Error updating order {order_id}: {e}")
         return False
 
 def create_order_in_batch(order_data):
+    """Create order in Orders sheet"""
     try:
         add_to_batch("Orders", "append", order_data)
         return True
     except Exception as e:
         logger.error(f"Error creating order: {e}")
-        return False
+        # Try creating the sheet if it doesn't exist
+        try:
+            client = get_sheet_client()
+            spreadsheet = client.open_by_key(SHEET_ID)
+            spreadsheet.add_worksheet(title="Orders", rows=100, cols=20)
+            # Add headers
+            worksheet = spreadsheet.worksheet("Orders")
+            headers = ["Order_ID", "Timestamp", "Username", "Bureau_Name", "Status", 
+                      "Assigned_Worker", "Hourly_Rate", "Booking_Fee_Paid", 
+                      "Payment_Status", "Payment_Method", "Assignment_Timestamp",
+                      "Client_TG_ID", "Location", "City", "Total_Hours", "Total_Amount"]
+            worksheet.append_row(headers)
+            # Try again
+            add_to_batch("Orders", "append", order_data)
+            return True
+        except Exception as e2:
+            logger.error(f"Failed to create Orders sheet: {e2}")
+            return False
 
 def create_payout_in_batch(payout_data):
+    """Create payout in Payouts sheet"""
     try:
         add_to_batch("Payouts", "append", payout_data)
         return True
     except Exception as e:
         logger.error(f"Error creating payout: {e}")
-        return False
+        # Try creating the sheet if it doesn't exist
+        try:
+            client = get_sheet_client()
+            spreadsheet = client.open_by_key(SHEET_ID)
+            spreadsheet.add_worksheet(title="Payouts", rows=100, cols=10)
+            # Add headers
+            worksheet = spreadsheet.worksheet("Payouts")
+            headers = ["Timestamp", "Order_ID", "Worker_ID", "Amount", "Type", 
+                      "Status", "Payment_Method", "Account_Details"]
+            worksheet.append_row(headers)
+            # Try again
+            add_to_batch("Payouts", "append", payout_data)
+            return True
+        except Exception as e2:
+            logger.error(f"Failed to create Payouts sheet: {e2}")
+            return False
 
 def log_history_in_batch(action_data):
+    """Log to History sheet"""
     try:
         add_to_batch("History", "append", action_data)
         return True
     except Exception as e:
         logger.error(f"Error logging history: {e}")
-        return False
+        # Try creating the sheet if it doesn't exist
+        try:
+            client = get_sheet_client()
+            spreadsheet = client.open_by_key(SHEET_ID)
+            spreadsheet.add_worksheet(title="History", rows=1000, cols=10)
+            # Add headers
+            worksheet = spreadsheet.worksheet("History")
+            headers = ["Timestamp", "User_ID", "User_Type", "Action", "Details"]
+            worksheet.append_row(headers)
+            # Try again
+            add_to_batch("History", "append", action_data)
+            return True
+        except Exception as e2:
+            logger.error(f"Failed to create History sheet: {e2}")
+            return False
 
 def ban_user_in_batch(user_id, reason=""):
     try:
@@ -520,7 +680,7 @@ def can_worker_exchange(order_record, worker_id):
 # ======================
 def get_msg(key, **kwargs):
     messages = {
-        "start": "Welcome! Are you a Client, Worker, or Admin?\nእንኳን በደህና መጡ! ደንበኛ፣ ሰራተኛ ወይስ አስተዳዳሪ ነዎት?",
+        "start": "Welcome! Are you a Client, Worker, or Admin?\nእንኳን በደህና መጡ! ደንበኛ፣ ሰራተኛ ወይም አስተዳዳሪ ነዎት?",
         "worker_dashboard": "👷‍♂️ **Worker Dashboard**\n👷‍♂️ **የሰራተኛ ዳሽቦርድ**\nChoose an option:\nምርጫ ይምረጡ፡",
         "worker_job_alert": "📍 **New Job Available!**\n📍 **አዲስ ስራ አለ!**\n\nBureau: {bureau}\nCity: {city}\nRate: {rate} ETB/hour\n\nቢሮ: {bureau}\nከተማ: {city}\nክፍያ: {rate} ብር/ሰዓት",
         "worker_job_accepted": "✅ **Job Accepted!**\n✅ **ስራ ተቀበለዋል!**\n\nPlease proceed to {bureau} for check-in.\nእባክዎን ለምዝገባ ወደ {bureau} ይሂዱ።",
@@ -654,9 +814,7 @@ def update_persistent_user_state(user_id, state, data):
 # ======================
 async def broadcast_job_to_workers(context: ContextTypes.DEFAULT_TYPE, order_id, bureau, city):
     try:
-        workers_data = bulk_get_sheets_data(["Workers"])
-        workers = workers_data.get("Workers", [])
-        active_workers = [w for w in workers if w.get("Status") == "Active"]
+        active_workers = get_active_workers()
         
         if not active_workers:
             logger.warning("No active workers found for broadcasting")
@@ -667,10 +825,11 @@ async def broadcast_job_to_workers(context: ContextTypes.DEFAULT_TYPE, order_id,
         sent_count = 0
         for worker in active_workers:
             try:
-                telegram_id = int(worker.get("Telegram_ID", 0))
+                telegram_id = worker.get("Telegram_ID")
                 if telegram_id:
+                    telegram_id_int = int(telegram_id)
                     await context.bot.send_message(
-                        chat_id=telegram_id,
+                        chat_id=telegram_id_int,
                         text=message_text,
                         reply_markup=InlineKeyboardMarkup([
                             [InlineKeyboardButton(
@@ -681,7 +840,7 @@ async def broadcast_job_to_workers(context: ContextTypes.DEFAULT_TYPE, order_id,
                     )
                     sent_count += 1
             except Exception as e:
-                logger.error(f"Failed to send to worker {worker.get('Telegram_ID')}: {e}")
+                logger.error(f"Failed to send to worker {telegram_id}: {e}")
         
         logger.info(f"Job broadcasted to {sent_count}/{len(active_workers)} workers")
         
@@ -695,8 +854,7 @@ async def broadcast_exchange_request(context: ContextTypes.DEFAULT_TYPE, order_i
             return
         
         current_worker_id = order.get("Assigned_Worker")
-        workers = get_worksheet_data_optimized("Workers")
-        active_workers = [w for w in workers if w.get("Status") == "Active"]
+        active_workers = get_active_workers()
         
         message_text = get_msg("exchange_request", worker_name=worker_name)
         
@@ -744,16 +902,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_persistent_user_state(user_id, persistent_state.get("state", STATE_NONE), persistent_state.get("data", {}))
     
     if not user_record:
-        add_to_batch("Users", "append", [
+        # Create user with all required fields
+        user_data = [
             str(user_id),
             first_name,
             username or "",
-            "",
-            "Client",
-            "Active",
+            "",  # Phone
+            "Client",  # Role
+            "Active",  # Status
             str(datetime.now()),
             str(datetime.now())
-        ])
+        ]
+        
+        # Check if Users sheet exists and has correct headers
+        try:
+            users_ws = get_worksheet("Users")
+            headers = users_ws.row_values(1)
+            if not headers:
+                # Add headers if sheet is empty
+                headers = ["User_ID", "Full_Name", "Username", "Phone", "Role", "Status", "Created_At", "Updated_At"]
+                users_ws.append_row(headers)
+        except:
+            # Sheet doesn't exist, it will be created when we append
+            pass
+        
+        add_to_batch("Users", "append", user_data)
         log_history_in_batch([
             str(datetime.now()),
             str(user_id),
@@ -788,13 +961,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def show_worker_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id):
-    workers_data = bulk_get_sheets_data(["Workers"])
-    worker_info = None
-    
-    for worker in workers_data.get("Workers", []):
-        if str(worker.get("Telegram_ID")) == str(user_id):
-            worker_info = worker
-            break
+    worker_info = get_worker_by_telegram_id(user_id)
     
     if not worker_info:
         await update.message.reply_text("⚠️ Worker not found. Please register first.\n⚠️ ሰራተኛ አልተገኘም። መጀመሪያ ይመዝገቡ።")
@@ -858,13 +1025,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         
         elif "My Earnings" in text or "የእኔ ገቢ" in text:
-            total_earnings = int(worker_info.get('Total_Earnings', 0))
+            total_earnings = int(worker_info.get('Total_Earnings', 0) or 0)
             commission_paid = int(total_earnings * 0.25)
             net_income = total_earnings - commission_paid
             
-            payouts = get_worksheet_data_optimized("Payouts")
-            pending_payouts = sum(int(p.get("Amount", 0)) for p in payouts 
-                                if p.get("Worker_ID") == str(user_id) and p.get("Status") == "Pending")
+            try:
+                payouts = get_worksheet_data_optimized("Payouts")
+                pending_payouts = sum(int(p.get("Amount", 0)) for p in payouts 
+                                    if p.get("Worker_ID") == str(user_id) and p.get("Status") == "Pending")
+            except:
+                pending_payouts = 0
             
             earnings_text = (
                 f"💰 **Earnings Summary**\n💰 **የገቢ ማጠቃለያ**\n"
@@ -887,7 +1057,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Bank/ባንክ: {worker_info.get('Bank_type', 'N/A')} ••••{last_four}\n"
                 f"Status/ሁኔታ: {worker_info.get('Status', 'N/A')}\n"
                 f"Rating/ደረጃ: {worker_info.get('Rating', 'N/A')} ⭐\n"
-                f"Jobs Completed/የተጠናቁ ስራዎች: {worker_info.get('Total_Earnings', '0')}"
+                f"Jobs Completed/የተጠናቁ ስራዎች: {worker_info.get('Jobs_Completed', '0')}"
             )
             await update.message.reply_text(profile_text, parse_mode="Markdown")
         
@@ -1090,7 +1260,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     workers = get_worksheet_data_optimized("Workers", use_cache=False)
                     for i, worker in enumerate(workers):
                         if str(worker.get("Telegram_ID")) == str(worker_id):
-                            current_rating = float(worker.get("Rating", 3.0))
+                            current_rating = float(worker.get("Rating", 3.0) or 3.0)
                             new_rating = (current_rating + rating) / 2
                             
                             row_index = i + 2
@@ -1318,20 +1488,21 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["selfie"] = photo_file_id
         worker_id = f"WRK{str(uuid4())[:8].upper()}"
         
+        # Create worker in Workers sheet
         add_to_batch("Workers", "append", [
             worker_id,
             data.get("name", ""),
             data.get("phone", ""),
             str(user_id),
-            "0",
-            "0",
-            "Pending",
+            "0",  # Total_Earnings
+            "0",  # Jobs_Completed
+            "Pending",  # Status
             data.get("telebirr", ""),
             data.get("bank_type", ""),
             data.get("account_number", ""),
             data.get("account_holder", ""),
-            "3.0",
-            str(datetime.now())
+            "3.0",  # Rating
+            str(datetime.now())  # Created_At
         ])
         
         log_history_in_batch([
@@ -2106,8 +2277,8 @@ def run_background_tasks():
 # ======================
 def create_application():
     """Create and configure the Telegram bot application"""
-    if not BOT_TOKEN or not SHEET_ID:
-        logger.error("Missing required environment variables")
+    if not BOT_TOKEN:
+        logger.error("Missing required BOT_TOKEN")
         sys.exit(1)
     
     application = (
@@ -2134,27 +2305,127 @@ def create_application():
     logger.info("✅ Bot application created successfully")
     return application
 
-def run_simple_bot():
-    """Run bot without Flask - simplest version"""
-    logger.info("🤖 Creating bot application...")
+# ======================
+# FLASK SERVER
+# ======================
+def run_flask_server():
+    """Run Flask server with your sheet structure"""
+    app = Flask(__name__)
     
-    # Create application
+    # Create application instance
     application = create_application()
+    
+    @app.route('/')
+    def home():
+        return jsonify({
+            "status": "Yazilign Bot Running",
+            "timestamp": datetime.now().isoformat(),
+            "sheets_configured": bool(SHEET_ID and GOOGLE_CREDS),
+            "sheets_structure": "Custom"
+        })
+    
+    @app.route('/health')
+    def health():
+        return jsonify({
+            "status": "healthy",
+            "bot_token": bool(BOT_TOKEN),
+            "sheet_id": bool(SHEET_ID),
+            "google_creds": bool(GOOGLE_CREDS)
+        })
+    
+    @app.route('/debug-sheets')
+    def debug_sheets():
+        """Debug sheet structure"""
+        try:
+            worksheet_names = get_all_worksheet_names()
+            return jsonify({
+                "worksheets": worksheet_names,
+                "timestamp": datetime.now().isoformat()
+            })
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+    
+    # SIMPLE Webhook endpoint
+    @app.route('/telegram', methods=['POST'])
+    def telegram_webhook():
+        """Handle Telegram webhook updates"""
+        try:
+            logger.info(f"=== WEBHOOK CALLED ===")
+            
+            # Get JSON data
+            json_string = request.get_data().decode('utf-8')
+            json_data = json.loads(json_string)
+            
+            if not json_data:
+                logger.error("No JSON data received")
+                return jsonify({"status": "error", "message": "No JSON data"}), 400
+            
+            update_id = json_data.get('update_id')
+            
+            # Log message details
+            if 'message' in json_data:
+                message = json_data['message']
+                user_id = message.get('from', {}).get('id')
+                text = message.get('text', '')
+                logger.info(f"📨 Message from user {user_id}: {text}")
+            
+            # Convert to Update object
+            update = Update.de_json(json_data, application.bot)
+            
+            if not update:
+                logger.error("Failed to parse update")
+                return jsonify({"status": "error", "message": "Invalid update"}), 400
+            
+            # Process update
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(application.process_update(update))
+                logger.info(f"✅ Successfully processed update {update_id}")
+            except Exception as e:
+                logger.error(f"Error processing update: {e}")
+            finally:
+                loop.close()
+            
+            return jsonify({"status": "ok", "update_id": update_id})
+            
+        except Exception as e:
+            logger.error(f"Webhook error: {e}", exc_info=True)
+            return jsonify({"status": "error", "message": str(e)}), 500
+    
+    @app.route('/telegram', methods=['GET'])
+    def telegram_webhook_get():
+        """Handle GET requests to webhook endpoint"""
+        return jsonify({
+            "status": "ready",
+            "message": "Telegram webhook endpoint is ready",
+            "timestamp": datetime.now().isoformat()
+        })
+    
+    logger.info(f"🚀 Starting Flask server on port {PORT}")
     
     # Start background tasks
     run_background_tasks()
     
-    logger.info("🤖 Starting bot in polling mode...")
+    # Start bot in polling mode in background
+    def start_bot():
+        time.sleep(3)  # Wait for Flask to start
+        logger.info("🤖 Starting bot in background...")
+        try:
+            application.run_polling(
+                drop_pending_updates=True,
+                allowed_updates=["message", "callback_query", "edited_message"],
+                timeout=30,
+                pool_timeout=30
+            )
+        except Exception as e:
+            logger.error(f"Bot error: {e}")
     
-    # Start polling
-    application.run_polling(
-        drop_pending_updates=True,
-        allowed_updates=["message", "callback_query", "edited_message"],
-        timeout=30,
-        pool_timeout=30,
-        read_timeout=30,
-        write_timeout=30
-    )
+    bot_thread = Thread(target=start_bot, daemon=True)
+    bot_thread.start()
+    
+    # Start Flask server
+    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False, threaded=True)
 
 def main():
     """Main entry point"""
@@ -2166,8 +2437,8 @@ def main():
     logger.info(f"🌐 Port: {PORT}")
     logger.info("=" * 60)
     
-    # Run simple bot
-    run_simple_bot()
+    # Run Flask server
+    run_flask_server()
 
 if __name__ == "__main__":
     main()
