@@ -2306,10 +2306,10 @@ def create_application():
     return application
 
 # ======================
-# FLASK SERVER
+# SIMPLE FLASK SERVER WITH WEBHOOKS ONLY
 # ======================
 def run_flask_server():
-    """Run Flask server with your sheet structure"""
+    """Run Flask server with webhook setup"""
     app = Flask(__name__)
     
     # Create application instance
@@ -2320,125 +2320,87 @@ def run_flask_server():
         return jsonify({
             "status": "Yazilign Bot Running",
             "timestamp": datetime.now().isoformat(),
-            "sheets_configured": bool(SHEET_ID and GOOGLE_CREDS),
-            "sheets_structure": "Custom"
+            "mode": "webhook" if WEBHOOK_URL else "polling",
+            "sheets_configured": bool(SHEET_ID and GOOGLE_CREDS)
         })
     
     @app.route('/health')
     def health():
-        return jsonify({
-            "status": "healthy",
-            "bot_token": bool(BOT_TOKEN),
-            "sheet_id": bool(SHEET_ID),
-            "google_creds": bool(GOOGLE_CREDS)
-        })
+        return jsonify({"status": "healthy"})
     
-    @app.route('/debug-sheets')
-    def debug_sheets():
-        """Debug sheet structure"""
-        try:
-            worksheet_names = get_all_worksheet_names()
-            return jsonify({
-                "worksheets": worksheet_names,
-                "timestamp": datetime.now().isoformat()
-            })
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-    
-    # SIMPLE Webhook endpoint
     @app.route('/telegram', methods=['POST'])
     def telegram_webhook():
         """Handle Telegram webhook updates"""
         try:
-            logger.info(f"=== WEBHOOK CALLED ===")
-            
-            # Get JSON data
-            json_string = request.get_data().decode('utf-8')
-            json_data = json.loads(json_string)
+            json_data = request.get_json()
             
             if not json_data:
                 logger.error("No JSON data received")
                 return jsonify({"status": "error", "message": "No JSON data"}), 400
             
-            update_id = json_data.get('update_id')
-            
-            # Log message details
-            if 'message' in json_data:
-                message = json_data['message']
-                user_id = message.get('from', {}).get('id')
-                text = message.get('text', '')
-                logger.info(f"📨 Message from user {user_id}: {text}")
-            
             # Convert to Update object
             update = Update.de_json(json_data, application.bot)
             
             if not update:
-                logger.error("Failed to parse update")
                 return jsonify({"status": "error", "message": "Invalid update"}), 400
             
-            # Process update
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(application.process_update(update))
-                logger.info(f"✅ Successfully processed update {update_id}")
-            except Exception as e:
-                logger.error(f"Error processing update: {e}")
-            finally:
-                loop.close()
+            # Process update in background thread
+            def process_update():
+                try:
+                    # Create new event loop for this thread
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    
+                    # Run the update processing
+                    loop.run_until_complete(application.process_update(update))
+                    loop.close()
+                except Exception as e:
+                    logger.error(f"Error processing update: {e}")
             
-            return jsonify({"status": "ok", "update_id": update_id})
+            # Process in background thread to avoid blocking
+            Thread(target=process_update, daemon=True).start()
+            
+            return jsonify({"status": "ok"})
             
         except Exception as e:
-            logger.error(f"Webhook error: {e}", exc_info=True)
+            logger.error(f"Webhook error: {e}")
             return jsonify({"status": "error", "message": str(e)}), 500
     
     @app.route('/telegram', methods=['GET'])
     def telegram_webhook_get():
-        """Handle GET requests to webhook endpoint"""
-        return jsonify({
-            "status": "ready",
-            "message": "Telegram webhook endpoint is ready",
-            "timestamp": datetime.now().isoformat()
-        })
+        return jsonify({"status": "ready"})
+    
+    @app.route('/setup-webhook', methods=['GET'])
+    def setup_webhook():
+        """Setup webhook on Telegram"""
+        try:
+            webhook_url = f"{RENDER_EXTERNAL_URL}/telegram" if RENDER_EXTERNAL_URL else f"https://{request.host}/telegram"
+            
+            # Setup webhook asynchronously
+            async def setup():
+                await application.bot.set_webhook(
+                    url=webhook_url,
+                    max_connections=40
+                )
+                return await application.bot.get_webhook_info()
+            
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            webhook_info = loop.run_until_complete(setup())
+            loop.close()
+            
+            return jsonify({
+                "status": "webhook_set",
+                "webhook_url": webhook_url,
+                "webhook_info": webhook_info.to_dict() if hasattr(webhook_info, 'to_dict') else str(webhook_info)
+            })
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
     
     logger.info(f"🚀 Starting Flask server on port {PORT}")
     
     # Start background tasks
     run_background_tasks()
     
-    # Start bot in polling mode in background
-    def start_bot():
-        time.sleep(3)  # Wait for Flask to start
-        logger.info("🤖 Starting bot in background...")
-        try:
-            application.run_polling(
-                drop_pending_updates=True,
-                allowed_updates=["message", "callback_query", "edited_message"],
-                timeout=30,
-                pool_timeout=30
-            )
-        except Exception as e:
-            logger.error(f"Bot error: {e}")
-    
-    bot_thread = Thread(target=start_bot, daemon=True)
-    bot_thread.start()
-    
     # Start Flask server
-    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False, threaded=True)
-
-def main():
-    """Main entry point"""
-    logger.info("=" * 60)
-    logger.info("🚀 YAZILIGN BOT STARTING")
-    logger.info(f"🤖 Token: {'*' * 20}{BOT_TOKEN[-4:] if BOT_TOKEN else 'NONE'}")
-    logger.info(f"👑 Admin: {ADMIN_CHAT_ID}")
-    logger.info(f"📊 Sheet: {SHEET_ID[:10]}..." if SHEET_ID else "📊 Sheet: NONE")
-    logger.info(f"🌐 Port: {PORT}")
-    logger.info("=" * 60)
-    
-    # Run Flask server
-    run_flask_server()
-
-if __name__ == "__main__":
-    main()
+    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
