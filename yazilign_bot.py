@@ -8,7 +8,7 @@ from telegram.ext import (
 )
 
 # --- ENV CONFIG ---
-ADMIN_ID = int(os.getenv("ADMIN_CHAT_ID", "8322080514"))
+ADMIN_ID = int(os.getenv("ADMIN_CHAT_ID"))
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN_MAIN")
 SHEET_ID = os.getenv("SHEET_ID")
 
