@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 import time
 from collections import defaultdict
 import requests
-import socket  # Added for webhook
+import socket
 
 # ======================
 # GLOBAL STATE WITH LOCK
@@ -76,7 +76,6 @@ RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").strip()
 def get_google_credentials():
     """Get Google credentials from environment variables"""
     try:
-        # Construct credentials dict from environment variables
         creds_dict = {
             "type": "service_account",
             "project_id": os.getenv("GOOGLE_PROJECT_ID", ""),
@@ -91,7 +90,6 @@ def get_google_credentials():
             "universe_domain": "googleapis.com"
         }
         
-        # Validate required fields
         required_fields = ["private_key_id", "private_key", "client_email", "project_id"]
         for field in required_fields:
             if not creds_dict.get(field):
@@ -122,10 +120,7 @@ HANDOVER_DISTANCE_LIMIT = 50
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("yazilign_bot.log")
-    ]
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
 
@@ -274,7 +269,6 @@ def get_sheet_client():
             logger.error("Google credentials not available")
             raise Exception("Google credentials not configured")
         
-        # Add scope for drive access
         scopes = [
             "https://spreadsheets.google.com/feeds",
             "https://www.googleapis.com/auth/drive.file",
@@ -373,7 +367,7 @@ def bulk_get_sheets_data(sheet_names):
     return results
 
 # ======================
-# DATA FUNCTIONS (UPDATED FOR YOUR STRUCTURE)
+# DATA FUNCTIONS
 # ======================
 def get_all_worksheet_names():
     """Get all worksheet names in the spreadsheet"""
@@ -387,21 +381,17 @@ def get_all_worksheet_names():
         return []
 
 def get_user_by_id(user_id):
-    """Get user from your Users sheet - Updated for your structure"""
+    """Get user from your Users sheet"""
     try:
         users_data = get_worksheet_data_optimized("Users")
         if not users_data:
             return None
         
-        # Check different possible column names for User_ID
         for user in users_data:
-            # Try User_ID column first
             if str(user.get("User_ID")) == str(user_id):
                 return user
-            # Try ID column
             if str(user.get("ID")) == str(user_id):
                 return user
-            # Try Telegram_ID column  
             if str(user.get("Telegram_ID")) == str(user_id):
                 return user
         
@@ -413,7 +403,6 @@ def get_user_by_id(user_id):
 def get_worker_by_telegram_id(telegram_id):
     """Get worker from Workers or Users sheet"""
     try:
-        # First try Workers sheet
         try:
             workers_data = get_worksheet_data_optimized("Workers")
             if workers_data:
@@ -423,12 +412,10 @@ def get_worker_by_telegram_id(telegram_id):
         except:
             pass
         
-        # If no Workers sheet, try Users sheet with Role=Worker
         users_data = get_worksheet_data_optimized("Users")
         if users_data:
             for user in users_data:
                 if str(user.get("Telegram_ID")) == str(telegram_id):
-                    # Check if they have worker role
                     role = user.get("Role", "")
                     if role.lower() == "worker" or "worker" in role.lower():
                         return user
@@ -441,7 +428,6 @@ def get_worker_by_telegram_id(telegram_id):
 def get_active_workers():
     """Get active workers from Workers or Users sheet"""
     try:
-        # Try Workers sheet first
         try:
             workers_data = get_worksheet_data_optimized("Workers")
             if workers_data:
@@ -449,7 +435,6 @@ def get_active_workers():
         except:
             pass
         
-        # Fallback to Users sheet
         users_data = get_worksheet_data_optimized("Users")
         if users_data:
             active_workers = []
@@ -476,12 +461,10 @@ def get_order_by_id(order_id):
                 return order
         return None
     except:
-        # If Orders sheet doesn't exist, try to create it
         try:
             client = get_sheet_client()
             spreadsheet = client.open_by_key(SHEET_ID)
             spreadsheet.add_worksheet(title="Orders", rows=100, cols=20)
-            # Add headers
             worksheet = spreadsheet.worksheet("Orders")
             headers = ["Order_ID", "Timestamp", "Username", "Bureau_Name", "Status", 
                       "Assigned_Worker", "Hourly_Rate", "Booking_Fee_Paid", 
@@ -511,12 +494,11 @@ def update_order_in_batch(order_id, updates):
         
         for i, order in enumerate(orders_data):
             if order.get("Order_ID") == order_id:
-                row_index = i + 2  # +2 because spreadsheet rows start at 1 and headers are row 1
+                row_index = i + 2
                 worksheet = get_worksheet("Orders")
                 headers = worksheet.row_values(1)
                 
                 for field, value in updates.items():
-                    # Try to find the column
                     col_index = None
                     for j, header in enumerate(headers):
                         if header.replace(" ", "_").replace("-", "_") == field.replace(" ", "_").replace("-", "_"):
@@ -528,7 +510,6 @@ def update_order_in_batch(order_id, updates):
                     else:
                         logger.warning(f"Column {field} not found in Orders sheet")
                 
-                # Also update the cache
                 for field, value in updates.items():
                     if field in order:
                         order[field] = str(value)
@@ -548,19 +529,16 @@ def create_order_in_batch(order_data):
         return True
     except Exception as e:
         logger.error(f"Error creating order: {e}")
-        # Try creating the sheet if it doesn't exist
         try:
             client = get_sheet_client()
             spreadsheet = client.open_by_key(SHEET_ID)
             spreadsheet.add_worksheet(title="Orders", rows=100, cols=20)
-            # Add headers
             worksheet = spreadsheet.worksheet("Orders")
             headers = ["Order_ID", "Timestamp", "Username", "Bureau_Name", "Status", 
                       "Assigned_Worker", "Hourly_Rate", "Booking_Fee_Paid", 
                       "Payment_Status", "Payment_Method", "Assignment_Timestamp",
                       "Client_TG_ID", "Location", "City", "Total_Hours", "Total_Amount"]
             worksheet.append_row(headers)
-            # Try again
             add_to_batch("Orders", "append", order_data)
             return True
         except Exception as e2:
@@ -574,17 +552,14 @@ def create_payout_in_batch(payout_data):
         return True
     except Exception as e:
         logger.error(f"Error creating payout: {e}")
-        # Try creating the sheet if it doesn't exist
         try:
             client = get_sheet_client()
             spreadsheet = client.open_by_key(SHEET_ID)
             spreadsheet.add_worksheet(title="Payouts", rows=100, cols=10)
-            # Add headers
             worksheet = spreadsheet.worksheet("Payouts")
             headers = ["Timestamp", "Order_ID", "Worker_ID", "Amount", "Type", 
                       "Status", "Payment_Method", "Account_Details"]
             worksheet.append_row(headers)
-            # Try again
             add_to_batch("Payouts", "append", payout_data)
             return True
         except Exception as e2:
@@ -598,16 +573,13 @@ def log_history_in_batch(action_data):
         return True
     except Exception as e:
         logger.error(f"Error logging history: {e}")
-        # Try creating the sheet if it doesn't exist
         try:
             client = get_sheet_client()
             spreadsheet = client.open_by_key(SHEET_ID)
             spreadsheet.add_worksheet(title="History", rows=1000, cols=10)
-            # Add headers
             worksheet = spreadsheet.worksheet("History")
             headers = ["Timestamp", "User_ID", "User_Type", "Action", "Details"]
             worksheet.append_row(headers)
-            # Try again
             add_to_batch("History", "append", action_data)
             return True
         except Exception as e2:
@@ -712,7 +684,7 @@ def get_msg(key, **kwargs):
         "worker_phone": "📱 Send phone number:\n📱 ስልክ ቁጥርዎን ይላኩ:",
         "worker_fyda_front": "📸 Send FRONT of your Fyda (ID):\n📸 የፍይዳዎን (ID) ገጽ ፎቶ ይላኩ:",
         "worker_fyda_back": "📸 Send BACK of your Fyda (ID):\n📸 የፍይዳዎን (ID) ወለድ ፎቶ ይላኩ:",
-        "admin_approve_worker": "🆕 New worker registration!\nName: {name}\nPhone: {phone}\nApprove?\n🆕 አዲስ የሰራተኛ �ምዝገባ!\nስም፡ {name}\nስልክ፡ {phone}\nፀድቀው ይወስኑ?",
+        "admin_approve_worker": "🆕 New worker registration!\nName: {name}\nPhone: {phone}\nApprove?\n🆕 አዲስ የሰራተኛ ምዝገባ!\nስም፡ {name}\nስልክ፡ {phone}\nፀድቀው ይወስኑ?",
         "worker_approved": "✅ Approved! You'll receive job alerts soon.\n✅ ፀድቋል! በቅርቡ የስራ ማስታወቂያ ይደርስዎታል።",
         "worker_declined": "❌ Declined. Contact admin for details.\n❌ ውድቅ ተደርጓል። ለተጨማሪ መረጃ አስተዳዳሪውን ያነጋግሩ።",
         "order_created": "✅ Order created! Searching for workers...\n✅ ትዕዛዝ ተፈጥሯል! ሰራተኛ እየፈለግን ነው...",
@@ -886,6 +858,9 @@ async def broadcast_exchange_request(context: ContextTypes.DEFAULT_TYPE, order_i
 # ======================
 # TELEGRAM HANDLERS
 # ======================
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Update {update} caused error {context.error}", exc_info=True)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
@@ -903,28 +878,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_persistent_user_state(user_id, persistent_state.get("state", STATE_NONE), persistent_state.get("data", {}))
     
     if not user_record:
-        # Create user with all required fields
         user_data = [
             str(user_id),
             first_name,
             username or "",
-            "",  # Phone
-            "Client",  # Role
-            "Active",  # Status
+            "",
+            "Client",
+            "Active",
             str(datetime.now()),
             str(datetime.now())
         ]
         
-        # Check if Users sheet exists and has correct headers
         try:
             users_ws = get_worksheet("Users")
             headers = users_ws.row_values(1)
             if not headers:
-                # Add headers if sheet is empty
                 headers = ["User_ID", "Full_Name", "Username", "Phone", "Role", "Status", "Created_At", "Updated_At"]
                 users_ws.append_row(headers)
         except:
-            # Sheet doesn't exist, it will be created when we append
             pass
         
         add_to_batch("Users", "append", user_data)
@@ -979,7 +950,7 @@ async def show_worker_dashboard(update: Update, context: ContextTypes.DEFAULT_TY
     
     await update.message.reply_text(
         get_msg("worker_dashboard"),
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, persistent=True),
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
         parse_mode="Markdown"
     )
     
@@ -992,8 +963,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     logger.info(f"Message from {user_id}: {text}")
     
-    persistent_state = load_user_state_from_sheets(user_id)
-    state_info = USER_STATE.get(user_id, persistent_state)
+    if user_id in USER_STATE:
+        state_info = USER_STATE[user_id]
+    else:
+        persistent_state = load_user_state_from_sheets(user_id)
+        state_info = persistent_state
+    
     state = state_info.get("state", STATE_NONE)
     data = state_info.get("data", {})
     
@@ -1072,7 +1047,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "• Payment issues? Check your bank/Telebirr details\n"
                 "• Location problems? Enable GPS and share live location\n\n"
                 "• ስራ አይታይም? ሁኔታዎ 'ንቁ' መሆኑን ያረጋግጡ\n"
-                "• የክፍያ ችግሮች? የባንክ/ቴሌቢር ዝርዝሮችዎን ያረጋግጡ\n"
+                "• የክፍያ ችግሮች? የባንክ/ቴሌቢር ዝርዝርዎን ያረጋግጡ\n"
                 "• የቦታ ችግሮች? GPS ያብሩ እና ቀጥታ ቦታ ያጋሩ"
             )
             await update.message.reply_text(help_text, parse_mode="Markdown")
@@ -1081,7 +1056,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if "Client" in text or "ደንበኛ" in text:
         update_persistent_user_state(user_id, STATE_CLIENT_CITY, {})
-        keyboard = [[f"{city}\n{city}" if city != "Addis Ababa" else f"{city}\nአዲስ አበባ"] for city in ALL_CITIES]
+        keyboard = []
+        for city in ALL_CITIES:
+            if city == "Addis Ababa":
+                keyboard.append([f"{city}\nአዲስ አበባ"])
+            else:
+                keyboard.append([f"{city}\n{city}"])
         keyboard.append([get_msg("back_to_dashboard")])
         await update.message.reply_text(
             "📍 Choose city:\n📍 ከተማ ይምረጡ፡",
@@ -1093,14 +1073,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if worker_info and worker_info.get("Status") == "Active":
             await show_worker_dashboard(update, context, user_id)
         else:
-            await update.message.reply_text(
-                get_msg("worker_registration"),
-                reply_markup=ReplyKeyboardMarkup([[get_msg("back_to_dashboard")]], resize_keyboard=True)
-            )
-            await update.message.reply_text(
-                "👷 Send your full name:\n👷 ሙሉ ስምዎን ይላኩ:"
-            )
             update_persistent_user_state(user_id, STATE_WORKER_NAME, {})
+            keyboard = [[get_msg("back_to_dashboard")]]
+            await update.message.reply_text(
+                "👷 Send your full name:\n👷 ሙሉ ስምዎን ይላኩ:",
+                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            )
     
     elif "Admin" in text and user_id == ADMIN_CHAT_ID:
         await update.message.reply_text(
@@ -1116,7 +1094,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         city_name = text.split('\n')[0].strip()
         
         if re.search(r'\d', city_name):
-            keyboard = [[f"{city}\n{city}" if city != "Addis Ababa" else f"{city}\nአዲስ አበባ"] for city in ALL_CITIES]
+            keyboard = []
+            for city in ALL_CITIES:
+                if city == "Addis Ababa":
+                    keyboard.append([f"{city}\nአዲስ አበባ"])
+                else:
+                    keyboard.append([f"{city}\n{city}"])
             keyboard.append([get_msg("back_to_dashboard")])
             await update.message.reply_text(get_msg("invalid_city"))
             await update.message.reply_text(
@@ -1126,7 +1109,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         if city_name not in ACTIVE_CITIES:
-            keyboard = [[f"{city}\n{city}" if city != "Addis Ababa" else f"{city}\nአዲስ አበባ"] for city in ALL_CITIES]
+            keyboard = []
+            for city in ALL_CITIES:
+                if city == "Addis Ababa":
+                    keyboard.append([f"{city}\nአዲስ አበባ"])
+                else:
+                    keyboard.append([f"{city}\n{city}"])
             keyboard.append([get_msg("back_to_dashboard")])
             await update.message.reply_text(get_msg("city_not_active", city=city_name))
             await update.message.reply_text(
@@ -1464,8 +1452,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     photo_file_id = update.message.photo[-1].file_id
     
-    persistent_state = load_user_state_from_sheets(user_id)
-    state_info = USER_STATE.get(user_id, persistent_state)
+    if user_id in USER_STATE:
+        state_info = USER_STATE[user_id]
+    else:
+        persistent_state = load_user_state_from_sheets(user_id)
+        state_info = persistent_state
+    
     state = state_info.get("state", STATE_NONE)
     data = state_info.get("data", {})
     
@@ -1489,21 +1481,20 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["selfie"] = photo_file_id
         worker_id = f"WRK{str(uuid4())[:8].upper()}"
         
-        # Create worker in Workers sheet
         add_to_batch("Workers", "append", [
             worker_id,
             data.get("name", ""),
             data.get("phone", ""),
             str(user_id),
-            "0",  # Total_Earnings
-            "0",  # Jobs_Completed
-            "Pending",  # Status
+            "0",
+            "0",
+            "Pending",
             data.get("telebirr", ""),
             data.get("bank_type", ""),
             data.get("account_number", ""),
             data.get("account_holder", ""),
-            "3.0",  # Rating
-            str(datetime.now())  # Created_At
+            "3.0",
+            str(datetime.now())
         ])
         
         log_history_in_batch([
@@ -1630,8 +1621,12 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     logger.info(f"Location from {user_id}: {lat}, {lon}")
     
-    persistent_state = load_user_state_from_sheets(user_id)
-    state_info = USER_STATE.get(user_id, persistent_state)
+    if user_id in USER_STATE:
+        state_info = USER_STATE[user_id]
+    else:
+        persistent_state = load_user_state_from_sheets(user_id)
+        state_info = persistent_state
+    
     state = state_info.get("state", STATE_NONE)
     data = state_info.get("data", {})
     
@@ -2073,8 +2068,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_caption(caption="❌ Rejected.\n❌ ተውግዷል።")
     
     elif data == "turn_on_location":
-        persistent_state = load_user_state_from_sheets(user_id)
-        state_info = USER_STATE.get(user_id, persistent_state)
+        if user_id in USER_STATE:
+            state_info = USER_STATE[user_id]
+        else:
+            persistent_state = load_user_state_from_sheets(user_id)
+            state_info = persistent_state
+            
         order_id = state_info["data"].get("order_id")
         if order_id:
             order = get_order_by_id(order_id)
@@ -2198,7 +2197,6 @@ def run_background_tasks():
     def task_loop():
         while True:
             try:
-                # Auto-flush batches
                 with BATCH_LOCK:
                     current_time = datetime.now()
                     time_since_flush = (current_time - LAST_BATCH_FLUSH).total_seconds()
@@ -2207,8 +2205,7 @@ def run_background_tasks():
                         flush_all_batches()
                         logger.info("Auto-flushed batches")
                 
-                # Monitor ghost orders (every hour)
-                if datetime.now().minute == 0:  # Run at the start of each hour
+                if datetime.now().minute == 0:
                     orders = get_worksheet_data_optimized("Orders")
                     current_time = datetime.now()
                     
@@ -2240,8 +2237,7 @@ def run_background_tasks():
                                 except:
                                     continue
                 
-                # Check commission deadlines (every 30 minutes)
-                if datetime.now().minute % 30 == 0:  # Run every 30 minutes
+                if datetime.now().minute % 30 == 0:
                     payouts = get_worksheet_data_optimized("Payouts")
                     current_time = datetime.now()
                     
@@ -2261,56 +2257,18 @@ def run_background_tasks():
                                 except:
                                     continue
                 
-                # Sleep for 60 seconds before next iteration
                 time.sleep(60)
                 
             except Exception as e:
                 logger.error(f"Background task error: {e}")
                 time.sleep(60)
     
-    # Start background thread
     bg_thread = Thread(target=task_loop, daemon=True)
     bg_thread.start()
     logger.info("✅ Background tasks started")
 
 # ======================
 # APPLICATION SETUP
-# ======================
-def create_application():
-    """Create and configure the Telegram bot application"""
-    if not BOT_TOKEN:
-        logger.error("Missing required BOT_TOKEN")
-        sys.exit(1)
-    
-    application = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .concurrent_updates(True)
-        .pool_timeout(30)
-        .read_timeout(30)
-        .write_timeout(30)
-        .build()
-    )
-    
-    # Add handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("stats", admin_stats))
-    application.add_handler(CommandHandler("flush", admin_flush))
-    application.add_handler(CommandHandler("cache", admin_cache))
-    application.add_handler(CommandHandler("broadcast", admin_broadcast))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    application.add_handler(MessageHandler(filters.LOCATION, handle_location))
-    application.add_handler(CallbackQueryHandler(handle_callback))
-    
-    logger.info("✅ Bot application created successfully")
-    return application
-
-# ======================
-# SIMPLE FLASK + POLLING SOLUTION
-# ======================
-# ======================
-# SIMPLE POLLING ONLY SOLUTION (NO FLASK)
 # ======================
 def main():
     """Main entry point"""
@@ -2322,17 +2280,12 @@ def main():
     logger.info(f"🌐 Port: {PORT}")
     logger.info("=" * 60)
     
-    # Create application
-    application = create_application()
-    
     # Start background tasks
     run_background_tasks()
     
     logger.info("🤖 Starting bot in polling mode...")
     
-    # Start polling with proper event loop
     try:
-        # Create application with proper timeouts
         application = Application.builder() \
             .token(BOT_TOKEN) \
             .concurrent_updates(True) \
@@ -2355,9 +2308,12 @@ def main():
         application.add_handler(MessageHandler(filters.LOCATION, handle_location))
         application.add_handler(CallbackQueryHandler(handle_callback))
         
+        # Add error handler
+        application.add_error_handler(error_handler)
+        
         logger.info("✅ Bot application created successfully")
         
-        # Also start a simple HTTP server on the port for Render health checks
+        # Start a simple HTTP server for Render health checks
         def start_http_server():
             from http.server import HTTPServer, BaseHTTPRequestHandler
             
@@ -2370,13 +2326,12 @@ def main():
                     self.wfile.write(response)
                 
                 def log_message(self, format, *args):
-                    pass  # Disable logging
+                    pass
             
             server = HTTPServer(('0.0.0.0', PORT), HealthHandler)
             logger.info(f"🌐 HTTP health server started on port {PORT}")
             server.serve_forever()
         
-        # Start HTTP server in background thread
         http_thread = Thread(target=start_http_server, daemon=True)
         http_thread.start()
         
