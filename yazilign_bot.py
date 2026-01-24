@@ -22,15 +22,19 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from flask import Flask, jsonify, request
-import asyncio
 import sys
 import json
 from concurrent.futures import ThreadPoolExecutor
 import time
 from collections import defaultdict
-import requests
-import socket
+import signal
+import atexit
+
+# ======================
+# SINGLETON PATTERN FOR BOT
+# ======================
+_bot_instance = None
+_bot_lock = Lock()
 
 # ======================
 # GLOBAL STATE WITH LOCK
@@ -38,7 +42,7 @@ import socket
 STATE_LOCK = Lock()
 USER_STATE = {}
 WORKER_DASHBOARD_SESSIONS = {}
-EXECUTOR = ThreadPoolExecutor(max_workers=10)
+EXECUTOR = ThreadPoolExecutor(max_workers=5)
 
 # ======================
 # CACHE FOR SHEETS DATA
@@ -67,8 +71,8 @@ BATCH_MAX_SIZE = 50
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN_MAIN", "").strip()
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
 SHEET_ID = os.getenv("SHEET_ID", "").strip()
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").strip()
+PORT = int(os.getenv("PORT", "10000"))
+ADMIN_TELEGRAM_USERNAME = "@YazilignAdmin"
 
 # ======================
 # GOOGLE CREDENTIALS FROM ENV
@@ -111,8 +115,6 @@ COMMISSION_PERCENT = 0.25
 COMMISSION_TIMEOUT_HOURS = 3
 MAX_WARNING_DISTANCE = 100
 MAX_ALLOWED_DISTANCE = 500
-PORT = int(os.getenv("PORT", "10000"))
-ADMIN_TELEGRAM_USERNAME = "@YazilignAdmin"
 EXCHANGE_TIMEOUT_HOURS = 3
 HANDOVER_DISTANCE_LIMIT = 50
 
@@ -128,7 +130,6 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.WARNING)
-logging.getLogger("werkzeug").setLevel(logging.WARNING)
 logging.getLogger("gspread").setLevel(logging.WARNING)
 logging.getLogger("oauth2client").setLevel(logging.WARNING)
 
@@ -171,6 +172,35 @@ STATE_WORKER_EXCHANGE_CONFIRM = 32
 STATE_CLIENT_HANDOVER_CONFIRM = 33
 STATE_WORKER_JOB_FINISHED = 34
 STATE_WORKER_SELFIE = 35
+
+# ======================
+# CLEANUP HANDLERS
+# ======================
+def cleanup():
+    """Cleanup function to stop all threads and flush data"""
+    logger.info("🛑 Starting cleanup...")
+    
+    # Stop executor
+    EXECUTOR.shutdown(wait=False)
+    
+    # Flush all batches before exiting
+    try:
+        flush_all_batches()
+    except Exception as e:
+        logger.error(f"Error flushing batches during cleanup: {e}")
+    
+    logger.info("✅ Cleanup completed")
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals"""
+    logger.info(f"🛑 Received signal {signum}, shutting down...")
+    cleanup()
+    sys.exit(0)
+
+# Register signal handlers
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+atexit.register(cleanup)
 
 # ======================
 # BATCH OPERATIONS MANAGER
@@ -369,17 +399,6 @@ def bulk_get_sheets_data(sheet_names):
 # ======================
 # DATA FUNCTIONS
 # ======================
-def get_all_worksheet_names():
-    """Get all worksheet names in the spreadsheet"""
-    try:
-        client = get_sheet_client()
-        spreadsheet = client.open_by_key(SHEET_ID)
-        worksheets = spreadsheet.worksheets()
-        return [ws.title for ws in worksheets]
-    except Exception as e:
-        logger.error(f"Error getting worksheet names: {e}")
-        return []
-
 def get_user_by_id(user_id):
     """Get user from your Users sheet"""
     try:
@@ -585,35 +604,6 @@ def log_history_in_batch(action_data):
         except Exception as e2:
             logger.error(f"Failed to create History sheet: {e2}")
             return False
-
-def ban_user_in_batch(user_id, reason=""):
-    try:
-        users = get_worksheet_data_optimized("Users", use_cache=False)
-        
-        for i, user in enumerate(users):
-            if str(user.get("User_ID")) == str(user_id):
-                row_index = i + 2
-                worksheet = get_worksheet("Users")
-                headers = worksheet.row_values(1)
-                
-                if "Status" in headers:
-                    col_index = headers.index("Status") + 1
-                    add_to_batch("Users", "update", (row_index, col_index, "Banned"))
-                
-                log_history_in_batch([
-                    str(datetime.now()),
-                    str(user_id),
-                    "Admin",
-                    "User_Banned",
-                    f"User banned: {reason}"
-                ])
-                
-                return True
-        
-        return False
-    except Exception as e:
-        logger.error(f"Error banning user: {e}")
-        return False
 
 # ======================
 # LOCATION FUNCTIONS
@@ -1386,7 +1376,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
     
     elif state == STATE_WORKER_CHECKIN_PHOTO:
-        # Handled in photo handler
         pass
     
     elif state == STATE_WORKER_UPDATE_PHONE:
@@ -2270,6 +2259,74 @@ def run_background_tasks():
 # ======================
 # APPLICATION SETUP
 # ======================
+def get_bot_application():
+    """Get singleton bot application instance"""
+    global _bot_instance
+    
+    with _bot_lock:
+        if _bot_instance is None:
+            if not BOT_TOKEN:
+                logger.error("Missing required BOT_TOKEN")
+                sys.exit(1)
+            
+            _bot_instance = Application.builder() \
+                .token(BOT_TOKEN) \
+                .concurrent_updates(True) \
+                .get_updates_read_timeout(30) \
+                .get_updates_write_timeout(30) \
+                .get_updates_connect_timeout(30) \
+                .pool_timeout(30) \
+                .read_timeout(30) \
+                .write_timeout(30) \
+                .build()
+            
+            # Add handlers
+            _bot_instance.add_handler(CommandHandler("start", start))
+            _bot_instance.add_handler(CommandHandler("stats", admin_stats))
+            _bot_instance.add_handler(CommandHandler("flush", admin_flush))
+            _bot_instance.add_handler(CommandHandler("cache", admin_cache))
+            _bot_instance.add_handler(CommandHandler("broadcast", admin_broadcast))
+            _bot_instance.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+            _bot_instance.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+            _bot_instance.add_handler(MessageHandler(filters.LOCATION, handle_location))
+            _bot_instance.add_handler(CallbackQueryHandler(handle_callback))
+            
+            # Add error handler
+            _bot_instance.add_error_handler(error_handler)
+            
+            logger.info("✅ Bot application created successfully")
+        
+        return _bot_instance
+
+def start_health_server():
+    """Start a simple HTTP server for health checks (non-blocking)"""
+    try:
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+        
+        class HealthHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                response = json.dumps({"status": "healthy", "bot": "running"}).encode()
+                self.wfile.write(response)
+            
+            def log_message(self, format, *args):
+                pass  # Disable logging
+        
+        server = HTTPServer(('0.0.0.0', PORT), HealthHandler)
+        logger.info(f"🌐 HTTP health server started on port {PORT}")
+        
+        # Run server in a separate thread
+        def run_server():
+            server.serve_forever()
+        
+        server_thread = Thread(target=run_server, daemon=True)
+        server_thread.start()
+        
+    except Exception as e:
+        logger.error(f"Failed to start health server: {e}")
+
 def main():
     """Main entry point"""
     logger.info("=" * 60)
@@ -2280,70 +2337,31 @@ def main():
     logger.info(f"🌐 Port: {PORT}")
     logger.info("=" * 60)
     
+    # Start health server
+    start_health_server()
+    
     # Start background tasks
     run_background_tasks()
     
+    # Get bot application
+    application = get_bot_application()
+    
     logger.info("🤖 Starting bot in polling mode...")
     
+    # Start bot polling with error handling
     try:
-        application = Application.builder() \
-            .token(BOT_TOKEN) \
-            .concurrent_updates(True) \
-            .get_updates_read_timeout(30) \
-            .get_updates_write_timeout(30) \
-            .get_updates_connect_timeout(30) \
-            .pool_timeout(30) \
-            .read_timeout(30) \
-            .write_timeout(30) \
-            .build()
-        
-        # Add handlers
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("stats", admin_stats))
-        application.add_handler(CommandHandler("flush", admin_flush))
-        application.add_handler(CommandHandler("cache", admin_cache))
-        application.add_handler(CommandHandler("broadcast", admin_broadcast))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-        application.add_handler(MessageHandler(filters.LOCATION, handle_location))
-        application.add_handler(CallbackQueryHandler(handle_callback))
-        
-        # Add error handler
-        application.add_error_handler(error_handler)
-        
-        logger.info("✅ Bot application created successfully")
-        
-        # Start a simple HTTP server for Render health checks
-        def start_http_server():
-            from http.server import HTTPServer, BaseHTTPRequestHandler
-            
-            class HealthHandler(BaseHTTPRequestHandler):
-                def do_GET(self):
-                    self.send_response(200)
-                    self.send_header('Content-type', 'application/json')
-                    self.end_headers()
-                    response = json.dumps({"status": "healthy", "bot": "running"}).encode()
-                    self.wfile.write(response)
-                
-                def log_message(self, format, *args):
-                    pass
-            
-            server = HTTPServer(('0.0.0.0', PORT), HealthHandler)
-            logger.info(f"🌐 HTTP health server started on port {PORT}")
-            server.serve_forever()
-        
-        http_thread = Thread(target=start_http_server, daemon=True)
-        http_thread.start()
-        
-        # Start bot polling
         application.run_polling(
             drop_pending_updates=True,
-            allowed_updates=["message", "callback_query", "edited_message"]
+            allowed_updates=["message", "callback_query", "edited_message"],
+            close_loop=False  # Don't close the loop on shutdown
         )
-        
+    except KeyboardInterrupt:
+        logger.info("🛑 Bot stopped by user")
     except Exception as e:
         logger.error(f"Bot error: {e}", exc_info=True)
         raise
+    finally:
+        cleanup()
 
 if __name__ == "__main__":
     main()
