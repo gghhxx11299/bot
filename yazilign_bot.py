@@ -1,5 +1,4 @@
 import os
-import socket  # Add this with other imports
 import logging
 from datetime import datetime, timedelta
 from threading import Lock, Thread
@@ -31,6 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 import time
 from collections import defaultdict
 import requests
+import socket  # Added for webhook
 
 # ======================
 # GLOBAL STATE WITH LOCK
@@ -712,7 +712,7 @@ def get_msg(key, **kwargs):
         "worker_phone": "📱 Send phone number:\n📱 ስልክ ቁጥርዎን ይላኩ:",
         "worker_fyda_front": "📸 Send FRONT of your Fyda (ID):\n📸 የፍይዳዎን (ID) ገጽ ፎቶ ይላኩ:",
         "worker_fyda_back": "📸 Send BACK of your Fyda (ID):\n📸 የፍይዳዎን (ID) ወለድ ፎቶ ይላኩ:",
-        "admin_approve_worker": "🆕 New worker registration!\nName: {name}\nPhone: {phone}\nApprove?\n🆕 አዲስ የሰራተኛ ምዝገባ!\nስም፡ {name}\nስልክ፡ {phone}\nፀድቀው ይወስኑ?",
+        "admin_approve_worker": "🆕 New worker registration!\nName: {name}\nPhone: {phone}\nApprove?\n🆕 አዲስ የሰራተኛ �ምዝገባ!\nስም፡ {name}\nስልክ፡ {phone}\nፀድቀው ይወስኑ?",
         "worker_approved": "✅ Approved! You'll receive job alerts soon.\n✅ ፀድቋል! በቅርቡ የስራ ማስታወቂያ ይደርስዎታል።",
         "worker_declined": "❌ Declined. Contact admin for details.\n❌ ውድቅ ተደርጓል። ለተጨማሪ መረጃ አስተዳዳሪውን ያነጋግሩ።",
         "order_created": "✅ Order created! Searching for workers...\n✅ ትዕዛዝ ተፈጥሯል! ሰራተኛ እየፈለግን ነው...",
@@ -2307,48 +2307,20 @@ def create_application():
     return application
 
 # ======================
-# PROPER WEBHOOK SOLUTION
+# SIMPLE FLASK + POLLING SOLUTION
 # ======================
-def run_webhook_bot():
-    """Run bot with proper webhook setup for Render"""
-    logger.info("🤖 Creating bot application...")
-    
-    # Create application
-    application = create_application()
-    
-    # Start background tasks
-    run_background_tasks()
-    
-    # Get webhook URL
-    if RENDER_EXTERNAL_URL:
-        webhook_url = f"{RENDER_EXTERNAL_URL}/telegram"
-    else:
-        webhook_url = f"https://{socket.gethostname()}/telegram"
-    
-    logger.info(f"🌐 Webhook URL: {webhook_url}")
-    
-    # Setup webhook
-    async def setup_webhook():
-        await application.bot.set_webhook(
-            url=webhook_url,
-            max_connections=40,
-            drop_pending_updates=True
-        )
-        webhook_info = await application.bot.get_webhook_info()
-        logger.info(f"✅ Webhook set: {webhook_info.url}")
-    
-    # Run setup
-    asyncio.run(setup_webhook())
-    
-    # Create Flask app
+def run_simple_server():
+    """Simple Flask server with bot in background thread"""
     app = Flask(__name__)
+    
+    # Global application instance
+    application = None
     
     @app.route('/')
     def home():
         return jsonify({
             "status": "Yazilign Bot Running",
-            "timestamp": datetime.now().isoformat(),
-            "mode": "webhook"
+            "timestamp": datetime.now().isoformat()
         })
     
     @app.route('/health')
@@ -2357,45 +2329,39 @@ def run_webhook_bot():
     
     @app.route('/telegram', methods=['POST'])
     def telegram_webhook():
-        """Handle Telegram webhook updates"""
-        try:
-            # Get update
-            update_data = request.get_json()
-            
-            if not update_data:
-                logger.error("No JSON data received")
-                return jsonify({"status": "error"}), 400
-            
-            # Convert to Update object
-            update = Update.de_json(update_data, application.bot)
-            
-            if not update:
-                logger.error("Failed to parse update")
-                return jsonify({"status": "error"}), 400
-            
-            # Process update asynchronously
-            async def process():
-                await application.process_update(update)
-            
-            # Run in thread pool to avoid blocking
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(process())
-            loop.close()
-            
-            return jsonify({"status": "ok"})
-            
-        except Exception as e:
-            logger.error(f"Webhook error: {e}")
-            return jsonify({"status": "error"}), 500
+        # Just accept webhook calls but don't process them (we're using polling)
+        return jsonify({"status": "ok", "note": "Using polling mode"})
     
-    @app.route('/telegram', methods=['GET'])
-    def telegram_get():
-        return jsonify({"status": "webhook ready"})
+    # Start bot in background thread
+    def start_bot():
+        global application
+        time.sleep(2)  # Wait for Flask to start
+        
+        logger.info("🤖 Starting bot in polling mode...")
+        
+        # Create application
+        application = create_application()
+        
+        # Start background tasks
+        run_background_tasks()
+        
+        # Start polling
+        try:
+            application.run_polling(
+                drop_pending_updates=True,
+                allowed_updates=["message", "callback_query", "edited_message"],
+                timeout=30,
+                read_timeout=30,
+                write_timeout=30
+            )
+        except Exception as e:
+            logger.error(f"Bot polling error: {e}")
+    
+    # Start bot thread
+    bot_thread = Thread(target=start_bot, daemon=True)
+    bot_thread.start()
     
     logger.info(f"🚀 Starting Flask server on port {PORT}")
-    
-    # Start Flask
     app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
 def main():
@@ -2408,8 +2374,8 @@ def main():
     logger.info(f"🌐 Port: {PORT}")
     logger.info("=" * 60)
     
-    # Run with webhooks
-    run_webhook_bot()
+    # Run simple Flask server with bot
+    run_simple_server()
 
 if __name__ == "__main__":
     main()
