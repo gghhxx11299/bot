@@ -2309,61 +2309,9 @@ def create_application():
 # ======================
 # SIMPLE FLASK + POLLING SOLUTION
 # ======================
-def run_simple_server():
-    """Simple Flask server with bot in background thread"""
-    app = Flask(__name__)
-    
-    # Global application instance
-    application = None
-    
-    @app.route('/')
-    def home():
-        return jsonify({
-            "status": "Yazilign Bot Running",
-            "timestamp": datetime.now().isoformat()
-        })
-    
-    @app.route('/health')
-    def health():
-        return jsonify({"status": "healthy"})
-    
-    @app.route('/telegram', methods=['POST'])
-    def telegram_webhook():
-        # Just accept webhook calls but don't process them (we're using polling)
-        return jsonify({"status": "ok", "note": "Using polling mode"})
-    
-    # Start bot in background thread
-    def start_bot():
-        global application
-        time.sleep(2)  # Wait for Flask to start
-        
-        logger.info("🤖 Starting bot in polling mode...")
-        
-        # Create application
-        application = create_application()
-        
-        # Start background tasks
-        run_background_tasks()
-        
-        # Start polling
-        try:
-            application.run_polling(
-                drop_pending_updates=True,
-                allowed_updates=["message", "callback_query", "edited_message"],
-                timeout=30,
-                read_timeout=30,
-                write_timeout=30
-            )
-        except Exception as e:
-            logger.error(f"Bot polling error: {e}")
-    
-    # Start bot thread
-    bot_thread = Thread(target=start_bot, daemon=True)
-    bot_thread.start()
-    
-    logger.info(f"🚀 Starting Flask server on port {PORT}")
-    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
-
+# ======================
+# SIMPLE POLLING ONLY SOLUTION (NO FLASK)
+# ======================
 def main():
     """Main entry point"""
     logger.info("=" * 60)
@@ -2374,8 +2322,73 @@ def main():
     logger.info(f"🌐 Port: {PORT}")
     logger.info("=" * 60)
     
-    # Run simple Flask server with bot
-    run_simple_server()
+    # Create application
+    application = create_application()
+    
+    # Start background tasks
+    run_background_tasks()
+    
+    logger.info("🤖 Starting bot in polling mode...")
+    
+    # Start polling with proper event loop
+    try:
+        # Create application with proper timeouts
+        application = Application.builder() \
+            .token(BOT_TOKEN) \
+            .concurrent_updates(True) \
+            .get_updates_read_timeout(30) \
+            .get_updates_write_timeout(30) \
+            .get_updates_connect_timeout(30) \
+            .pool_timeout(30) \
+            .read_timeout(30) \
+            .write_timeout(30) \
+            .build()
+        
+        # Add handlers
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("stats", admin_stats))
+        application.add_handler(CommandHandler("flush", admin_flush))
+        application.add_handler(CommandHandler("cache", admin_cache))
+        application.add_handler(CommandHandler("broadcast", admin_broadcast))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+        application.add_handler(MessageHandler(filters.LOCATION, handle_location))
+        application.add_handler(CallbackQueryHandler(handle_callback))
+        
+        logger.info("✅ Bot application created successfully")
+        
+        # Also start a simple HTTP server on the port for Render health checks
+        def start_http_server():
+            from http.server import HTTPServer, BaseHTTPRequestHandler
+            
+            class HealthHandler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    self.send_response(200)
+                    self.send_header('Content-type', 'application/json')
+                    self.end_headers()
+                    response = json.dumps({"status": "healthy", "bot": "running"}).encode()
+                    self.wfile.write(response)
+                
+                def log_message(self, format, *args):
+                    pass  # Disable logging
+            
+            server = HTTPServer(('0.0.0.0', PORT), HealthHandler)
+            logger.info(f"🌐 HTTP health server started on port {PORT}")
+            server.serve_forever()
+        
+        # Start HTTP server in background thread
+        http_thread = Thread(target=start_http_server, daemon=True)
+        http_thread.start()
+        
+        # Start bot polling
+        application.run_polling(
+            drop_pending_updates=True,
+            allowed_updates=["message", "callback_query", "edited_message"]
+        )
+        
+    except Exception as e:
+        logger.error(f"Bot error: {e}", exc_info=True)
+        raise
 
 if __name__ == "__main__":
     main()
