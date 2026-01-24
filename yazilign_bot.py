@@ -1,4 +1,5 @@
 import os
+import socket  # Add this with other imports
 import logging
 from datetime import datetime, timedelta
 from threading import Lock, Thread
@@ -2306,10 +2307,10 @@ def create_application():
     return application
 
 # ======================
-# SIMPLE POLLING BOT (NO FLASK)
+# PROPER WEBHOOK SOLUTION
 # ======================
-def run_simple_polling():
-    """Run bot in simple polling mode"""
+def run_webhook_bot():
+    """Run bot with proper webhook setup for Render"""
     logger.info("🤖 Creating bot application...")
     
     # Create application
@@ -2318,16 +2319,84 @@ def run_simple_polling():
     # Start background tasks
     run_background_tasks()
     
-    logger.info("🤖 Starting bot in polling mode...")
+    # Get webhook URL
+    if RENDER_EXTERNAL_URL:
+        webhook_url = f"{RENDER_EXTERNAL_URL}/telegram"
+    else:
+        webhook_url = f"https://{socket.gethostname()}/telegram"
     
-    # Start polling with proper event loop
-    application.run_polling(
-        drop_pending_updates=True,
-        allowed_updates=["message", "callback_query"],
-        timeout=30,
-        read_timeout=30,
-        write_timeout=30
-    )
+    logger.info(f"🌐 Webhook URL: {webhook_url}")
+    
+    # Setup webhook
+    async def setup_webhook():
+        await application.bot.set_webhook(
+            url=webhook_url,
+            max_connections=40,
+            drop_pending_updates=True
+        )
+        webhook_info = await application.bot.get_webhook_info()
+        logger.info(f"✅ Webhook set: {webhook_info.url}")
+    
+    # Run setup
+    asyncio.run(setup_webhook())
+    
+    # Create Flask app
+    app = Flask(__name__)
+    
+    @app.route('/')
+    def home():
+        return jsonify({
+            "status": "Yazilign Bot Running",
+            "timestamp": datetime.now().isoformat(),
+            "mode": "webhook"
+        })
+    
+    @app.route('/health')
+    def health():
+        return jsonify({"status": "healthy"})
+    
+    @app.route('/telegram', methods=['POST'])
+    def telegram_webhook():
+        """Handle Telegram webhook updates"""
+        try:
+            # Get update
+            update_data = request.get_json()
+            
+            if not update_data:
+                logger.error("No JSON data received")
+                return jsonify({"status": "error"}), 400
+            
+            # Convert to Update object
+            update = Update.de_json(update_data, application.bot)
+            
+            if not update:
+                logger.error("Failed to parse update")
+                return jsonify({"status": "error"}), 400
+            
+            # Process update asynchronously
+            async def process():
+                await application.process_update(update)
+            
+            # Run in thread pool to avoid blocking
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(process())
+            loop.close()
+            
+            return jsonify({"status": "ok"})
+            
+        except Exception as e:
+            logger.error(f"Webhook error: {e}")
+            return jsonify({"status": "error"}), 500
+    
+    @app.route('/telegram', methods=['GET'])
+    def telegram_get():
+        return jsonify({"status": "webhook ready"})
+    
+    logger.info(f"🚀 Starting Flask server on port {PORT}")
+    
+    # Start Flask
+    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
 def main():
     """Main entry point"""
@@ -2339,13 +2408,8 @@ def main():
     logger.info(f"🌐 Port: {PORT}")
     logger.info("=" * 60)
     
-    # Check if we should run with Flask or just polling
-    if os.getenv("RENDER"):
-        # On Render, use Flask with webhooks
-        run_flask_server()
-    else:
-        # For local testing, use polling
-        run_simple_polling()
+    # Run with webhooks
+    run_webhook_bot()
 
 if __name__ == "__main__":
     main()
