@@ -1,14 +1,17 @@
 import os, math, logging, asyncio, gspread
 from datetime import datetime, timedelta
 from oauth2client.service_account import ServiceAccountCredentials
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, 
     filters, ContextTypes, ConversationHandler, CallbackQueryHandler
 )
 
+# --- LOGGING ---
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
 # --- ENV CONFIG ---
-ADMIN_ID = int(os.getenv("ADMIN_CHAT_ID"))
+ADMIN_ID = int(os.getenv("ADMIN_CHAT_ID", "8322080514"))
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN_MAIN")
 SHEET_ID = os.getenv("SHEET_ID")
 
@@ -35,7 +38,7 @@ def sync_data(sheet_name, row_data):
     except Exception as e:
         logging.error(f"Sync Error: {e}")
 
-# --- LOCATIONS (122 WEREDAS) ---
+# --- 122 WEREDA DATA ---
 LOCATIONS = {
     "Addis Ketema": [f"Wereda {i:02d}" for i in [1,3,4,5,6,8,9,10,11,12,13,14]],
     "Akaki Kaliti": [f"Wereda {i:02d}" for i in [1,2,3,4,5,6,7,8,9,10,12,13]],
@@ -50,42 +53,45 @@ LOCATIONS = {
     "Lemi Kura": [f"Wereda {i:02d}" for i in [2,3,4,5,6,8,9,10,13,14]]
 }
 
+# --- GEOLOCATION CALC ---
+def get_distance(lat1, lon1, lat2, lon2):
+    R = 6371000 
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi, dlambda = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
+    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+
 # --- STATES ---
 ROLE, W_REG, W_SUBCITY, W_WEREDA, W_ID_F, W_ID_B, W_SELFIE = range(7)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [["I am a Client / ደንበኛ", "I am a Worker / ሰራተኛ"]]
-    text = (
-        "Welcome to Yazilign! / እንኳን ወደ ጻፍልኝ በደህና መጡ!\n\n"
-        "By continuing, you agree to our Terms and Conditions.\n"
-        "በመቀጠል በውል እና ግዴታዎቻችን ተስማምተዋል።"
-    )
+    text = "Welcome to Yazilign! Select your role:\nእንኳን ወደ ጻፍልኝ በደህና መጡ! ሚናዎን ይምረጡ:"
     await update.message.reply_text(text, reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
     return ROLE
 
 async def handle_role(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    choice = update.message.text
-    if "Worker" in choice:
-        await update.message.reply_text("Enter Full Name (Must match Bank/Telebirr):\nእባክዎ ሙሉ ስምዎን ያስገቡ (ከባንክ/ቴሌብር ስም ጋር መመሳሰል አለበት):")
+    if "Worker" in update.message.text:
+        await update.message.reply_text("Enter Full Name (Matches Bank):\nሙሉ ስምዎን ያስገቡ:")
         return W_REG
-    # Add Client flow here
+    await update.message.reply_text("Client module coming soon.")
     return ConversationHandler.END
 
 async def w_reg_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['w_name'] = update.message.text
     kb = [[s] for s in LOCATIONS.keys()]
-    await update.message.reply_text("Select your Work Subcity:\nየሚሰሩበትን ክፍለ ከተማ ይምረጡ:", reply_markup=ReplyKeyboardMarkup(kb))
+    await update.message.reply_text("Select Subcity / ክፍለ ከተማ:", reply_markup=ReplyKeyboardMarkup(kb))
     return W_SUBCITY
 
 async def w_reg_subcity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['w_subcity'] = update.message.text
     kb = [[w] for w in LOCATIONS[update.message.text]]
-    await update.message.reply_text("Select Wereda:\nወረዳ ይምረጡ:", reply_markup=ReplyKeyboardMarkup(kb))
+    await update.message.reply_text("Select Wereda / ወረዳ:", reply_markup=ReplyKeyboardMarkup(kb))
     return W_WEREDA
 
 async def w_reg_wereda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['w_wereda'] = update.message.text
-    await update.message.reply_text("Upload ID FRONT (Fayda):\nየፋይዳ መታወቂያዎን ፊት ለፊት ፎቶ ይላኩ:", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text("Upload ID FRONT / የመታወቂያ ፊት:", reply_markup=ReplyKeyboardRemove())
     return W_ID_F
 
 async def w_id_f(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -93,7 +99,7 @@ async def w_id_f(update: Update, context: ContextTypes.DEFAULT_TYPE):
     path = f"f_{update.effective_user.id}.jpg"
     await file.download_to_drive(path)
     context.user_data['id_f'] = path
-    await update.message.reply_text("Upload ID BACK:\nየመታወቂያዎን ጀርባ ፎቶ ይላኩ:")
+    await update.message.reply_text("Upload ID BACK / የመታወቂያ ጀርባ:")
     return W_ID_B
 
 async def w_id_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -101,7 +107,7 @@ async def w_id_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
     path = f"b_{update.effective_user.id}.jpg"
     await file.download_to_drive(path)
     context.user_data['id_b'] = path
-    await update.message.reply_text("Upload a clear Photo of yourself (Selfie):\nየራስዎን ግልጽ ፎቶ (ሴልፊ) ይላኩ:")
+    await update.message.reply_text("Upload Selfie / ፎቶዎን ይላኩ:")
     return W_SELFIE
 
 async def w_selfie(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -109,32 +115,43 @@ async def w_selfie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     path = f"s_{update.effective_user.id}.jpg"
     await file.download_to_drive(path)
     
-    # Notify Admin
-    msg = f"New Worker Approval Req:\nName: {context.user_data['w_name']}\nLoc: {context.user_data['w_subcity']}"
-    await context.bot.send_message(ADMIN_ID, msg)
+    # Send to Admin for Approval
+    await context.bot.send_message(ADMIN_ID, f"New Worker Approval:\nName: {context.user_data['w_name']}")
     await context.bot.send_photo(ADMIN_ID, open(context.user_data['id_f'], 'rb'))
     await context.bot.send_photo(ADMIN_ID, open(context.user_data['id_b'], 'rb'))
     await context.bot.send_photo(ADMIN_ID, open(path, 'rb'))
     
-    sync_data("Workers", [update.effective_user.id, context.user_data['w_name'], context.user_data['w_subcity'], context.user_data['w_wereda'], "Pending Approval"])
-    await update.message.reply_text("Sent for approval. We will notify you soon.\nለምርመራ ተልኳል። በቅርቡ እናሳውቅዎታለን።")
+    sync_data("Workers", [update.effective_user.id, context.user_data['w_name'], context.user_data['w_subcity'], "Pending"])
+    await update.message.reply_text("Registration sent! / ተመዝግቧል።")
     return ConversationHandler.END
 
-# --- GEOFENCING & TIMER (Background) ---
+# --- GEOFENCE & 30-MIN TIMER ---
+async def location_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.edited_message if update.edited_message else update.message
+    if not msg.location: return
+    u_id = update.effective_user.id
+    context.bot_data[f"hb_{u_id}"] = datetime.now()
+    
+    if f"fix_{u_id}" in context.bot_data:
+        lat, lon = context.bot_data[f"fix_{u_id}"]
+        if get_distance(lat, lon, msg.location.latitude, msg.location.longitude) > 500:
+            await context.bot.send_message(u_id, "⚠️ WARNING: You left the site! / ⚠️ ቦታውን ለቀው ወጥተዋል!")
+
 async def monitor_jobs(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now()
-    for key in list(context.bot_data.keys()):
-        if key.startswith("hb_"):
-            u_id = key.split("_")[1]
-            if now - context.bot_data[key] > timedelta(minutes=10):
-                await context.bot.send_message(u_id, "🚨 GPS Lost! Turn it on or cancel in 20m.\n🚨 ጂፒኤስ ጠፍቷል! በ20 ደቂቃ ውስጥ ካላበሩት ይሰረዛል።")
-            if now - context.bot_data[key] > timedelta(minutes=30):
-                await context.bot.send_message(u_id, "❌ Job Canceled: Disconnected.\n❌ ስራው ተሰርዟል፡ ግንኙነት ተቋርጧል።")
+    for k in list(context.bot_data.keys()):
+        if k.startswith("hb_"):
+            u_id = k.split("_")[1]
+            if now - context.bot_data[k] > timedelta(minutes=30):
+                await context.bot.send_message(u_id, "❌ Disconnected. Job Canceled. / ❌ ግንኙነት ተቋርጧል ስራው ተሰርዟል።")
 
+# --- MAIN ---
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
-    app.job_queue.run_repeating(monitor_jobs, interval=300)
     
+    if app.job_queue:
+        app.job_queue.run_repeating(monitor_jobs, interval=300)
+
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -150,6 +167,7 @@ def main():
     )
     
     app.add_handler(conv)
+    app.add_handler(MessageHandler(filters.LOCATION, location_update))
     app.run_polling()
 
 if __name__ == "__main__":
